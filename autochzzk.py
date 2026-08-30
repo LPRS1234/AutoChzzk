@@ -13,6 +13,7 @@ import urllib.error
 import urllib.request
 import webbrowser
 from pathlib import Path
+from tkinter import font as tkfont
 from tkinter import messagebox, ttk
 
 try:
@@ -151,6 +152,38 @@ def start_extension_server() -> ThreadingHTTPServer | None:
         return None
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server
+
+
+class MarqueeText(tk.Canvas):
+    """A single-line label that scrolls left only when its text is too long."""
+    def __init__(self, parent, text: str, *, fg: str, bg: str, font, height: int = 22) -> None:
+        super().__init__(parent, bg=bg, height=height, highlightthickness=0, bd=0, takefocus=0)
+        self.text_width = tkfont.Font(font=font).measure(text)
+        self.item = self.create_text(0, height // 2, text=text, fill=fg, font=font, anchor="w")
+        self.scrolling = False
+        self.after_id = None
+        self.bind("<Configure>", self._fit_text)
+
+    def _fit_text(self, _event=None) -> None:
+        if not self.winfo_exists(): return
+        if self.text_width <= self.winfo_width():
+            self.scrolling = False
+            self.coords(self.item, 0, self.winfo_height() // 2)
+            return
+        self.scrolling = True
+        if self.after_id is None: self.after_id = self.after(700, self._scroll)
+
+    def _scroll(self) -> None:
+        self.after_id = None
+        try:
+            if not self.winfo_exists() or not self.scrolling: return
+            x, y = self.coords(self.item)
+            x -= 1
+            if x + self.text_width < 0: x = self.winfo_width() + 12
+            self.coords(self.item, x, y)
+            self.after_id = self.after(35, self._scroll)
+        except tk.TclError:
+            return
 
 
 class AutoChzzkApp:
@@ -293,7 +326,7 @@ class AutoChzzkApp:
         ttk.Button(actions, text="간격 수정", style="Small.TButton", command=lambda value=channel["id"]: self.show_interval_editor(value)).pack(side="right", padx=(0, 8))
         details = tk.Frame(row, bg=self.INPUT)
         details.pack(side="left", fill="both", expand=True, padx=(0, 10))
-        tk.Label(details, text=channel.get("name") or channel["id"], fg=self.TEXT, bg=self.INPUT, font=("Malgun Gothic", 10, "bold"), anchor="w", justify="left", wraplength=220).pack(fill="x")
+        MarqueeText(details, channel.get("name") or channel["id"], fg=self.TEXT, bg=self.INPUT, font=("Malgun Gothic", 10, "bold")).pack(fill="x")
         live_state = self.live_info.get(channel["id"])
         if live_state is None:
             live_text, live_color = "방송 상태 확인 중…", self.MUTED
@@ -301,7 +334,7 @@ class AutoChzzkApp:
             live_text, live_color = f"방송 중 · {live_state[1]}", self.ACCENT
         else:
             live_text, live_color = "현재 방송 중이 아닙니다.", self.MUTED
-        tk.Label(details, text=live_text, fg=live_color, bg=self.INPUT, font=("Malgun Gothic", 8), anchor="w", justify="left", wraplength=220).pack(fill="x", pady=(2, 0))
+        MarqueeText(details, live_text, fg=live_color, bg=self.INPUT, font=("Malgun Gothic", 8), height=20).pack(fill="x", pady=(2, 0))
 
     def _make_interval_editor(self, channel: dict) -> None:
         editor = tk.Frame(self.list_frame, bg="#373B45", padx=13, pady=10)

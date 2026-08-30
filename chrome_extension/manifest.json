@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "description": "Prevents AutoChzzk from reopening CHZZK broadcasts already open in Chrome.",
   "minimum_chrome_version": "109",
-  "permissions": ["tabs", "alarms", "offscreen"],
+  "permissions": ["tabs", "alarms", "offscreen", "scripting"],
   "host_permissions": [
     "https://chzzk.naver.com/*",
     "http://127.0.0.1:8765/*"
@@ -12,6 +12,13 @@
   "background": {
     "service_worker": "background.js"
   },
+  "content_scripts": [
+    {
+      "matches": ["https://chzzk.naver.com/live/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
   "action": {
     "default_title": "AutoChzzk 연결됨"
   }
