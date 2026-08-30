@@ -423,7 +423,7 @@ class AutoChzzkApp:
     def _save_channels(self) -> None:
         DATA_PATH.write_text(json.dumps(self.channels, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    def _show_app_dialog(self, title: str, message: str, confirm_text: str = "확인", confirm_command=None, cancel_text: str | None = None) -> None:
+    def _show_app_dialog(self, title: str, message: str, confirm_text: str = "확인", confirm_command=None, cancel_text: str | None = None, cancel_command=None) -> None:
         """Show an app-styled modal instead of a Windows system dialog."""
         if self.active_dialog is not None and self.active_dialog.winfo_exists():
             self.active_dialog.lift()
@@ -453,7 +453,7 @@ class AutoChzzkApp:
                 callback()
 
         if cancel_text:
-            ttk.Button(buttons, text=cancel_text, style="Dark.TButton", command=close, cursor="hand2").pack(side="right")
+            ttk.Button(buttons, text=cancel_text, style="Dark.TButton", command=lambda: close(cancel_command), cursor="hand2").pack(side="right")
         ttk.Button(buttons, text=confirm_text, style="Accent.TButton", command=lambda: close(confirm_command), cursor="hand2").pack(side="right", padx=(0, 8) if cancel_text else 0)
         dialog.protocol("WM_DELETE_WINDOW", close)
         dialog.update_idletasks()
@@ -495,6 +495,13 @@ class AutoChzzkApp:
         self._set_extension_status("Chrome 확장 프로그램 연결을 다시 확인하는 중…")
         self.root.after(1_000, self._finish_extension_reconnect)
 
+    def _retry_extension_connection_after_later(self) -> None:
+        if self.stop_event.is_set():
+            return
+        self.extension_setup_prompted = False
+        self._set_extension_status("Chrome 확장 프로그램 연결을 다시 확인하는 중…")
+        self.root.after(1_000, self._check_extension_connection)
+
     def _finish_extension_reconnect(self) -> None:
         if self.stop_event.is_set():
             return
@@ -527,6 +534,7 @@ class AutoChzzkApp:
             "Chrome 열기",
             self._open_chrome_extensions,
             "나중에",
+            self._retry_extension_connection_after_later,
         )
 
     def _open_current_lives_after_extension_connect(self) -> None:
