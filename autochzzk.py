@@ -345,7 +345,7 @@ class AutoChzzkApp:
         self.canvas.bind("<Configure>", lambda event: self.canvas.itemconfigure(self.list_window, width=event.width))
         status = tk.Frame(outer, bg="#1D2C29", padx=13, pady=9); status.pack(fill="x", pady=(13, 0))
         self.status_dot = tk.Label(status, text="●", fg=self.ACCENT, bg="#1D2C29", font=("Segoe UI", 10)); self.status_dot.pack(side="left", padx=(0, 7))
-        tk.Label(status, textvariable=self.status_value, fg=self.TEXT, bg="#1D2C29", font=("Malgun Gothic", 9), anchor="w").pack(side="left", fill="x")
+        tk.Label(status, textvariable=self.status_value, fg=self.TEXT, bg="#1D2C29", font=("Malgun Gothic", 9), anchor="w").pack(side="left", fill="x", expand=True)
 
     def _load_channels(self) -> list[dict]:
         try:
