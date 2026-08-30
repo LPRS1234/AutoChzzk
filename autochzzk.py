@@ -528,17 +528,15 @@ class AutoChzzkApp:
         if CHROME_TABS.is_connected():
             command_id = CHROME_TABS.queue_background_open(live_url)
             self._set_status(f"방송 시작 감지: {channel.get('name', channel['id'])} · Chrome 백그라운드 탭으로 여는 중")
-            self.root.after(6_000, lambda: self._fallback_open(command_id, live_url, channel, title))
+            self.root.after(6_000, lambda: self._fallback_open(command_id, channel))
             return
-        self._set_status(f"방송 시작 감지: {channel.get('name', channel['id'])} · {title}"); self.root.bell(); webbrowser.open(LIVE_URL.format(channel_id=channel["id"]), new=2)
+        self._set_status("Chrome 확장 프로그램이 연결되지 않아 방송을 자동으로 열지 않았습니다.", True)
 
-    def _fallback_open(self, command_id: str, live_url: str, channel: dict, title: str) -> None:
-        """Open normally only if Chrome's companion did not acknowledge the command."""
+    def _fallback_open(self, command_id: str, channel: dict) -> None:
+        """Never bypass the extension when its background-tab command fails."""
         if not CHROME_TABS.is_pending(command_id): return
         CHROME_TABS.discard_command(command_id)
-        self._set_status(f"방송 시작 감지: {channel.get('name', channel['id'])} · {title}")
-        self.root.bell()
-        webbrowser.open(live_url, new=2)
+        self._set_status(f"{channel.get('name', channel['id'])} 방송 감지 · Chrome 확장 프로그램이 탭 열기를 확인하지 못해 자동으로 열지 않았습니다.", True)
 
     def _set_status(self, message: str, is_error: bool = False) -> None:
         self.status_value.set(message); self.status_dot.configure(fg=self.DANGER if is_error else self.ACCENT)
