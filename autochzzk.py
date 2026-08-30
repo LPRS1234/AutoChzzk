@@ -208,6 +208,7 @@ class AutoChzzkApp:
         self.last_checked: dict[str, float] = {channel["id"]: time.monotonic() for channel in self.channels if channel.get("enabled")}
         self.stop_event = threading.Event()
         self.tray_icon = None
+        self.active_dialog = None
         self.extension_server = start_extension_server()
         self.window_icon = None
         self.header_icon = None
@@ -289,9 +290,53 @@ class AutoChzzkApp:
     def _save_channels(self) -> None:
         DATA_PATH.write_text(json.dumps(self.channels, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    def _show_app_dialog(self, title: str, message: str, confirm_text: str = "확인", confirm_command=None, cancel_text: str | None = None) -> None:
+        """Show an app-styled modal instead of a Windows system dialog."""
+        if self.active_dialog is not None and self.active_dialog.winfo_exists():
+            self.active_dialog.lift()
+            return
+
+        dialog = tk.Toplevel(self.root, bg=self.SURFACE)
+        self.active_dialog = dialog
+        dialog.title(APP_NAME)
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+        dialog.configure(bg=self.SURFACE)
+
+        card = tk.Frame(dialog, bg=self.SURFACE, padx=24, pady=21)
+        card.pack(fill="both", expand=True)
+        tk.Label(card, text=title, fg=self.TEXT, bg=self.SURFACE, font=("Malgun Gothic", 12, "bold")).pack(anchor="w")
+        tk.Label(card, text=message, fg=self.MUTED, bg=self.SURFACE, font=("Malgun Gothic", 9), justify="left", wraplength=340).pack(anchor="w", pady=(9, 20))
+        buttons = tk.Frame(card, bg=self.SURFACE)
+        buttons.pack(fill="x")
+
+        def close(callback=None) -> None:
+            if not dialog.winfo_exists():
+                return
+            dialog.grab_release()
+            dialog.destroy()
+            self.active_dialog = None
+            if callback is not None:
+                callback()
+
+        if cancel_text:
+            ttk.Button(buttons, text=cancel_text, style="Dark.TButton", command=close, cursor="hand2").pack(side="right")
+        ttk.Button(buttons, text=confirm_text, style="Accent.TButton", command=lambda: close(confirm_command), cursor="hand2").pack(side="right", padx=(0, 8) if cancel_text else 0)
+        dialog.protocol("WM_DELETE_WINDOW", close)
+        dialog.update_idletasks()
+        root_x, root_y = self.root.winfo_rootx(), self.root.winfo_rooty()
+        x = root_x + max(0, (self.root.winfo_width() - dialog.winfo_width()) // 2)
+        y = root_y + max(0, (self.root.winfo_height() - dialog.winfo_height()) // 2)
+        dialog.geometry(f"+{x}+{y}")
+        dialog.grab_set()
+        dialog.focus_set()
+
     def add_channel(self) -> None:
         channel_id = extract_channel_id(self.input_value.get())
-        if not channel_id: messagebox.showerror(APP_NAME, "치지직 채널 URL 또는 32자리 채널 ID를 정확히 입력해 주세요."); return
+        if not channel_id:
+            message = "채널 URL 또는 32자리 채널 ID를 입력해 주세요." if not self.input_value.get().strip() else "치지직 채널 URL 또는 32자리 채널 ID를 정확히 입력해 주세요."
+            self._show_app_dialog("입력 확인", message)
+            return
         if any(channel["id"] == channel_id for channel in self.channels): messagebox.showinfo(APP_NAME, "이미 등록된 채널입니다."); return
         self._set_status("채널 정보를 불러오는 중…"); self.root.update_idletasks()
         try: name = get_channel_name(channel_id)
@@ -323,7 +368,7 @@ class AutoChzzkApp:
         actions.pack(side="right", anchor="n")
         active = bool(channel.get("enabled")); label = "감지 ON" if active else "감지 OFF"
         tk.Button(actions, text=label, command=lambda value=channel["id"]: self.toggle_channel(value), relief="flat", bd=0, cursor="hand2", padx=9, pady=5, font=("Malgun Gothic", 8, "bold"), bg=self.ACCENT if active else "#454954", fg="#08251D" if active else self.TEXT, activebackground="#38EDBB" if active else "#5A5F6B").pack(side="right", padx=(7, 0))
-        ttk.Button(actions, text="삭제", style="Small.TButton", command=lambda value=channel["id"]: self.remove_channel(value)).pack(side="right")
+        ttk.Button(actions, text="삭제", style="Small.TButton", command=lambda value=channel["id"], name=channel.get("name") or channel["id"]: self.confirm_remove_channel(value, name), cursor="hand2").pack(side="right")
         tk.Label(actions, text=f"{channel.get('interval', 60)}초", fg=self.MUTED, bg=self.INPUT, font=("Consolas", 9)).pack(side="right", padx=(0, 5))
         ttk.Button(actions, text="간격 수정", style="Small.TButton", command=lambda value=channel["id"]: self.show_interval_editor(value), cursor="hand2").pack(side="right", padx=(0, 8))
         details = tk.Frame(row, bg=self.INPUT)
@@ -360,6 +405,9 @@ class AutoChzzkApp:
             if channel["id"] == channel_id:
                 channel["enabled"] = not bool(channel.get("enabled")); self.was_live.pop(channel_id, None); break
         self._save_channels(); self._refresh_list()
+
+    def confirm_remove_channel(self, channel_id: str, channel_name: str) -> None:
+        self._show_app_dialog("채널 삭제", f"‘{channel_name}’ 채널을 삭제하시겠습니까?", "삭제", lambda: self.remove_channel(channel_id), "취소")
 
     def remove_channel(self, channel_id: str) -> None:
         self.channels = [channel for channel in self.channels if channel["id"] != channel_id]; self.was_live.pop(channel_id, None); self.editing_channel_id = None; self._save_channels(); self._refresh_list()
