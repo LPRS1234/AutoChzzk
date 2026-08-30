@@ -3,6 +3,22 @@ const ENDPOINT = "http://127.0.0.1:8765/chzzk-tabs";
 const completedCommandIds = new Set();
 let reporting = false;
 
+async function getClientId() {
+  const { clientId } = await chrome.storage.local.get("clientId");
+  if (typeof clientId === "string" && clientId.length >= 8) return clientId;
+  const newClientId = crypto.randomUUID();
+  await chrome.storage.local.set({ clientId: newClientId });
+  return newClientId;
+}
+
+async function isProfileFocused() {
+  try {
+    return Boolean((await chrome.windows.getLastFocused()).focused);
+  } catch {
+    return false;
+  }
+}
+
 async function ensurePoller() {
   try {
     await chrome.offscreen.createDocument({
@@ -43,10 +59,11 @@ async function reportOpenChzzkLives() {
     const channelIds = tabs
       .map((tab) => tab.url?.match(LIVE_URL_PATTERN)?.[1]?.toLowerCase())
       .filter(Boolean);
+    const [clientId, focused] = await Promise.all([getClientId(), isProfileFocused()]);
     const response = await fetch(ENDPOINT, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ channelIds, completedCommandIds: [...completedCommandIds] }),
+      body: JSON.stringify({ clientId, focused, channelIds, completedCommandIds: [...completedCommandIds] }),
     });
     if (response.ok) await executeOpenCommands((await response.json()).openCommands || []);
   } catch {

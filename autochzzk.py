@@ -63,43 +63,56 @@ def get_live_status(channel_id: str) -> tuple[bool, str]:
 
 
 class ChromeTabState:
-    """The extension's short-lived view of CHZZK live tabs open in Chrome."""
+    """Short-lived CHZZK tab reports from every installed Chrome profile."""
     def __init__(self) -> None:
-        self.channel_ids: set[str] = set()
-        self.updated_at = 0.0
-        self.pending_opens: dict[str, str] = {}
+        self.clients: dict[str, tuple[set[str], float]] = {}
+        self.last_focused_client_id: str | None = None
+        self.pending_opens: dict[str, tuple[str, str]] = {}
         self.lock = threading.Lock()
 
-    def update(self, channel_ids: set[str]) -> None:
+    def _fresh_clients(self) -> dict[str, tuple[set[str], float]]:
+        now = time.monotonic()
+        return {client_id: report for client_id, report in self.clients.items() if now - report[1] < 30}
+
+    def update(self, client_id: str, channel_ids: set[str], focused: bool) -> None:
         with self.lock:
-            self.channel_ids = channel_ids
-            self.updated_at = time.monotonic()
+            self.clients[client_id] = (channel_ids, time.monotonic())
+            self.clients = self._fresh_clients()
+            if focused:
+                self.last_focused_client_id = client_id
 
     def is_watched(self, channel_id: str) -> bool:
         with self.lock:
-            return time.monotonic() - self.updated_at < 30 and channel_id in self.channel_ids
+            return any(channel_id in channel_ids for channel_ids, _updated_at in self._fresh_clients().values())
 
     def is_connected(self) -> bool:
         with self.lock:
-            return time.monotonic() - self.updated_at < 5
+            return bool(self._fresh_clients())
 
     def queue_background_open(self, url: str) -> str:
         command_id = uuid.uuid4().hex
         with self.lock:
-            self.pending_opens[command_id] = url
+            clients = self._fresh_clients()
+            if not clients:
+                return ""
+            target_client_id = self.last_focused_client_id if self.last_focused_client_id in clients else max(clients, key=lambda client_id: clients[client_id][1])
+            self.pending_opens[command_id] = (url, target_client_id)
         return command_id
 
-    def pending_commands(self) -> list[dict[str, str]]:
+    def pending_commands(self, client_id: str) -> list[dict[str, str]]:
         with self.lock:
-            return [{"id": command_id, "url": url} for command_id, url in self.pending_opens.items()]
+            return [{"id": command_id, "url": url} for command_id, (url, target_client_id) in self.pending_opens.items() if target_client_id == client_id]
 
-    def acknowledge_commands(self, command_ids: list[str]) -> None:
+    def acknowledge_commands(self, client_id: str, command_ids: list[str]) -> None:
         with self.lock:
-            for command_id in command_ids: self.pending_opens.pop(command_id, None)
+            for command_id in command_ids:
+                command = self.pending_opens.get(command_id)
+                if command is not None and command[1] == client_id:
+                    self.pending_opens.pop(command_id, None)
 
     def is_pending(self, command_id: str) -> bool:
         with self.lock:
-            return command_id in self.pending_opens
+            return bool(command_id) and command_id in self.pending_opens
 
     def discard_command(self, command_id: str) -> None:
         with self.lock:
@@ -135,11 +148,15 @@ class ExtensionRequestHandler(BaseHTTPRequestHandler):
         try:
             size = max(0, min(int(self.headers.get("Content-Length", "0")), 16_384))
             payload = json.loads(self.rfile.read(size).decode("utf-8"))
+            client_id = payload.get("clientId", "")
+            if not isinstance(client_id, str) or not 8 <= len(client_id) <= 128:
+                self._reply(400)
+                return
             channel_ids = {value.lower() for value in payload.get("channelIds", []) if isinstance(value, str) and CHANNEL_ID_PATTERN.fullmatch(value)}
-            CHROME_TABS.update(channel_ids)
+            CHROME_TABS.update(client_id, channel_ids, bool(payload.get("focused")))
             completed = [value for value in payload.get("completedCommandIds", []) if isinstance(value, str)]
-            CHROME_TABS.acknowledge_commands(completed)
-            self._reply(payload={"ok": True, "openCommands": CHROME_TABS.pending_commands()})
+            CHROME_TABS.acknowledge_commands(client_id, completed)
+            self._reply(payload={"ok": True, "openCommands": CHROME_TABS.pending_commands(client_id)})
         except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
             self._reply(400)
 
@@ -343,9 +360,17 @@ class AutoChzzkApp:
         ]
         chrome_path = next((path for path in chrome_paths if path.is_file()), None)
         if chrome_path is not None:
-            # Start Chrome explicitly and make its new window navigate to the
-            # extension manager, instead of relying on the default browser.
-            subprocess.Popen([str(chrome_path), "--new-window", "chrome://extensions"], creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            profile_names = ["Default"]
+            local_state = Path(os.environ.get("LOCALAPPDATA", "")) / "Google" / "Chrome" / "User Data" / "Local State"
+            try:
+                profile_names = list(json.loads(local_state.read_text(encoding="utf-8")).get("profile", {}).get("info_cache", {}).keys()) or profile_names
+            except (OSError, json.JSONDecodeError):
+                pass
+            for profile_name in profile_names:
+                subprocess.Popen(
+                    [str(chrome_path), f"--profile-directory={profile_name}", "--new-window", "chrome://extensions/"],
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
         else:
             webbrowser.open("chrome://extensions", new=1)
 
@@ -356,7 +381,7 @@ class AutoChzzkApp:
         self._show_app_dialog(
             "Chrome 확장 프로그램 연결 필요",
             "AutoChzzk 확장 프로그램을 찾지 못했습니다.\n\n‘Chrome 확장 프로그램 열기’에서 개발자 모드를 켠 뒤, ‘압축해제된 확장 프로그램 로드’를 눌러 AutoChzzk 폴더의 chrome_extension 폴더를 선택해 주세요. Chrome 프로필이 3개라면 세 프로필 모두에서 이 과정을 반복해야 합니다.",
-            "Chrome 확장 프로그램 열기",
+            "모든 Chrome 프로필에서 열기",
             self._open_chrome_extensions,
             "나중에",
         )
