@@ -248,11 +248,7 @@ class AutoChzzkApp:
 
     def _build_ui(self) -> None:
         outer = tk.Frame(self.root, bg=self.BG, padx=30, pady=24); outer.pack(fill="both", expand=True)
-        if self.header_icon is not None:
-            tk.Label(outer, image=self.header_icon, bg=self.BG).pack(side="left")
-        else:
-            tk.Label(outer, text="●", fg=self.ACCENT, bg=self.BG, font=("Segoe UI", 22, "bold")).pack(side="left")
-        heading = tk.Frame(outer, bg=self.BG); heading.pack(fill="x", padx=(8, 0))
+        heading = tk.Frame(outer, bg=self.BG); heading.pack(fill="x")
         ttk.Button(heading, text="종료", style="Dark.TButton", command=self.on_close).pack(side="right", padx=(0, 0), pady=(4, 0))
         tk.Label(heading, text=APP_NAME, fg=self.TEXT, bg=self.BG, font=("Malgun Gothic", 18, "bold")).pack(anchor="w")
         tk.Label(heading, text="저장한 채널의 방송 시작을 자동 감지합니다", fg=self.MUTED, bg=self.BG, font=("Malgun Gothic", 9)).pack(anchor="w")
@@ -308,12 +304,18 @@ class AutoChzzkApp:
     def _refresh_list(self) -> None:
         for child in self.list_frame.winfo_children(): child.destroy()
         enabled_count = sum(bool(channel.get("enabled")) for channel in self.channels)
+        watching_count = sum(bool(self.live_info.get(channel["id"], (False, ""))[0]) for channel in self.channels)
         self.count_label.configure(text=f"등록 채널 {len(self.channels)}개 · 감지 중 {enabled_count}개")
         if not self.channels: tk.Label(self.list_frame, text="아직 등록된 채널이 없습니다.", fg=self.MUTED, bg=self.SURFACE, font=("Malgun Gothic", 10), pady=28).pack()
         for channel in self.channels:
             self._make_channel_row(channel)
             if self.editing_channel_id == channel["id"]: self._make_interval_editor(channel)
-        self._set_status("감지할 채널을 등록하세요." if not enabled_count else f"{enabled_count}개 채널의 방송 시작을 기다리는 중")
+        if not self.channels:
+            self._set_status("감지할 채널을 등록하세요.")
+        elif watching_count:
+            self._set_status(f"{watching_count}개의 방송을 시청 중")
+        else:
+            self._set_status("현재 방송 중인 등록 채널이 없습니다.")
 
     def _make_channel_row(self, channel: dict) -> None:
         row = tk.Frame(self.list_frame, bg=self.INPUT, padx=12, pady=9); row.pack(fill="x", pady=4)
