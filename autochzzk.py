@@ -487,6 +487,7 @@ class AutoChzzkApp:
             "설치했습니다",
             self._retry_extension_connection,
             "아직 설치 전",
+            self._retry_extension_install_prompt,
         )
 
     def _retry_extension_connection(self) -> None:
@@ -494,6 +495,24 @@ class AutoChzzkApp:
         self._set_status("Chrome 확장 프로그램 연결을 다시 확인하는 중입니다…")
         self._set_extension_status("Chrome 확장 프로그램 연결을 다시 확인하는 중…")
         self.root.after(1_000, self._finish_extension_reconnect)
+
+    def _retry_extension_install_prompt(self) -> None:
+        if self.stop_event.is_set():
+            return
+        self._set_extension_status("Chrome 확장 프로그램 연결을 다시 확인하는 중…")
+        self.root.after(1_000, self._finish_extension_install_prompt)
+
+    def _finish_extension_install_prompt(self) -> None:
+        if self.stop_event.is_set():
+            return
+        if CHROME_TABS.is_connected():
+            self.extension_setup_prompted = True
+            self._set_status("Chrome 확장 프로그램이 연결되었습니다.")
+            self._set_extension_status("Chrome 확장 프로그램 연결됨", True)
+            threading.Thread(target=self._open_current_lives_after_extension_connect, daemon=True).start()
+            return
+        self._set_extension_status("Chrome 확장 프로그램 연결 안 됨", False)
+        self._ask_extension_installed()
 
     def _retry_extension_connection_after_later(self) -> None:
         if self.stop_event.is_set():
