@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import subprocess
 import sys
 import threading
 import tkinter as tk
@@ -209,6 +211,7 @@ class AutoChzzkApp:
         self.stop_event = threading.Event()
         self.tray_icon = None
         self.active_dialog = None
+        self.extension_setup_prompted = False
         self.extension_server = start_extension_server()
         self.window_icon = None
         self.header_icon = None
@@ -222,6 +225,7 @@ class AutoChzzkApp:
         APP_INSTANCE = self
         self._refresh_list()
         root.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
+        root.after((EXTENSION_INITIAL_SYNC_SECONDS + 3) * 1000, self._check_extension_connection)
         threading.Thread(target=self._monitor, daemon=True).start()
         threading.Thread(target=self._check_saved_channels_on_start, daemon=True).start()
 
@@ -330,6 +334,50 @@ class AutoChzzkApp:
         dialog.geometry(f"+{x}+{y}")
         dialog.grab_set()
         dialog.focus_set()
+
+    @staticmethod
+    def _is_chrome_running() -> bool:
+        """Avoid showing an install warning merely because Chrome is closed."""
+        if sys.platform != "win32":
+            return False
+        try:
+            result = subprocess.run(
+                ["tasklist", "/FI", "IMAGENAME eq chrome.exe", "/NH"],
+                capture_output=True,
+                text=True,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                check=False,
+            )
+            return "chrome.exe" in result.stdout.lower()
+        except OSError:
+            return False
+
+    def _open_chrome_extensions(self) -> None:
+        chrome_paths = [
+            Path(os.environ.get("PROGRAMFILES", "")) / "Google" / "Chrome" / "Application" / "chrome.exe",
+            Path(os.environ.get("PROGRAMFILES(X86)", "")) / "Google" / "Chrome" / "Application" / "chrome.exe",
+            Path(os.environ.get("LOCALAPPDATA", "")) / "Google" / "Chrome" / "Application" / "chrome.exe",
+        ]
+        chrome_path = next((path for path in chrome_paths if path.is_file()), None)
+        if chrome_path is not None:
+            subprocess.Popen([str(chrome_path), "chrome://extensions"], creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        else:
+            webbrowser.open("chrome://extensions", new=1)
+
+    def _check_extension_connection(self) -> None:
+        if self.stop_event.is_set() or CHROME_TABS.is_connected() or self.extension_setup_prompted:
+            return
+        if not self._is_chrome_running():
+            self.root.after(15_000, self._check_extension_connection)
+            return
+        self.extension_setup_prompted = True
+        self._show_app_dialog(
+            "Chrome 확장 프로그램 연결 필요",
+            "AutoChzzk 확장 프로그램을 찾지 못했습니다.\n\n‘Chrome 확장 프로그램 열기’에서 개발자 모드를 켠 뒤, ‘압축해제된 확장 프로그램 로드’를 눌러 AutoChzzk 폴더의 chrome_extension 폴더를 선택해 주세요.",
+            "Chrome 확장 프로그램 열기",
+            self._open_chrome_extensions,
+            "나중에",
+        )
 
     def add_channel(self) -> None:
         channel_id = extract_channel_id(self.input_value.get())
