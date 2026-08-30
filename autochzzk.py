@@ -473,7 +473,7 @@ class AutoChzzkApp:
         chrome_path = next((path for path in chrome_paths if path.is_file()), None)
         if chrome_path is not None:
             subprocess.Popen(
-                [str(chrome_path), f"--profile-directory={self.selected_chrome_profile['directory']}", "--new-tab", "chrome://extensions/"],
+                [str(chrome_path), f"--profile-directory={self.selected_chrome_profile['directory']}", "chrome://extensions/"],
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
         else:
