@@ -335,23 +335,6 @@ class AutoChzzkApp:
         dialog.grab_set()
         dialog.focus_set()
 
-    @staticmethod
-    def _is_chrome_running() -> bool:
-        """Avoid showing an install warning merely because Chrome is closed."""
-        if sys.platform != "win32":
-            return False
-        try:
-            result = subprocess.run(
-                ["tasklist", "/FI", "IMAGENAME eq chrome.exe", "/NH"],
-                capture_output=True,
-                text=True,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                check=False,
-            )
-            return "chrome.exe" in result.stdout.lower()
-        except OSError:
-            return False
-
     def _open_chrome_extensions(self) -> None:
         chrome_paths = [
             Path(os.environ.get("PROGRAMFILES", "")) / "Google" / "Chrome" / "Application" / "chrome.exe",
@@ -366,9 +349,6 @@ class AutoChzzkApp:
 
     def _check_extension_connection(self) -> None:
         if self.stop_event.is_set() or CHROME_TABS.is_connected() or self.extension_setup_prompted:
-            return
-        if not self._is_chrome_running():
-            self.root.after(15_000, self._check_extension_connection)
             return
         self.extension_setup_prompted = True
         self._show_app_dialog(
