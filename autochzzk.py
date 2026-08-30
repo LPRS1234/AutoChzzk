@@ -450,7 +450,7 @@ class AutoChzzkApp:
         chrome_path = next((path for path in chrome_paths if path.is_file()), None)
         if chrome_path is not None:
             subprocess.Popen(
-                [str(chrome_path), f"--profile-directory={self.selected_chrome_profile['directory']}", "--new-window", "chrome://extensions/"],
+                [str(chrome_path), f"--profile-directory={self.selected_chrome_profile['directory']}", "--new-tab", "chrome://extensions/"],
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
         else:
@@ -463,7 +463,7 @@ class AutoChzzkApp:
         self._show_app_dialog(
             "Chrome 확장 프로그램 연결 필요",
             f"선택한 Chrome 프로필({self.selected_chrome_profile['name']})에서 AutoChzzk 확장 프로그램을 찾지 못했습니다.\n\n‘Chrome 확장 프로그램 열기’에서 개발자 모드를 켠 뒤, ‘압축해제된 확장 프로그램 로드’를 눌러 AutoChzzk 폴더의 chrome_extension 폴더를 선택해 주세요. 선택하지 않은 Chrome 프로필에는 설치할 필요가 없습니다.",
-            "선택한 Chrome 프로필에서 열기",
+            "Chrome 열기",
             self._open_chrome_extensions,
             "나중에",
         )
