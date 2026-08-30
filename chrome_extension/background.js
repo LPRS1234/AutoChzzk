@@ -40,14 +40,6 @@ async function ensurePoller() {
   }
 }
 
-async function injectIntoOpenChzzkLives() {
-  const tabs = await chrome.tabs.query({ url: ["https://chzzk.naver.com/live/*"] });
-  await Promise.allSettled(tabs.map((tab) => chrome.scripting.executeScript({
-    target: { tabId: tab.id },
-    files: ["content.js"],
-  })));
-}
-
 async function executeOpenCommands(commands) {
   for (const command of commands) {
     if (!command?.id || !command?.url || completedCommandIds.has(command.id)) continue;
@@ -84,13 +76,12 @@ async function reportOpenChzzkLives() {
 
 chrome.runtime.onInstalled.addListener(async () => {
   await ensurePoller();
-  await injectIntoOpenChzzkLives();
   chrome.alarms.create("report-open-chzzk-lives", { periodInMinutes: 0.5 });
   reportOpenChzzkLives();
 });
-chrome.runtime.onStartup.addListener(async () => { await ensurePoller(); await injectIntoOpenChzzkLives(); reportOpenChzzkLives(); });
+chrome.runtime.onStartup.addListener(async () => { await ensurePoller(); reportOpenChzzkLives(); });
 chrome.runtime.onMessage.addListener((message) => {
-  if (message?.type === "poll" || message?.type === "live-tab-heartbeat") reportOpenChzzkLives();
+  if (message?.type === "poll") reportOpenChzzkLives();
 });
 chrome.tabs.onUpdated.addListener(reportOpenChzzkLives);
 chrome.tabs.onRemoved.addListener(reportOpenChzzkLives);
