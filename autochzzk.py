@@ -73,8 +73,9 @@ def get_chrome_profiles() -> list[dict[str, str]]:
     for directory, info in info_cache.items():
         if not isinstance(directory, str) or not isinstance(info, dict):
             continue
-        name = info.get("name") or info.get("gaia_name") or directory
-        profiles.append({"directory": directory, "name": str(name), "gaia_id": str(info.get("gaia_id") or ""), "email": str(info.get("user_name") or "")})
+        email = str(info.get("user_name") or "")
+        name = email.split("@", 1)[0] if "@" in email else str(info.get("name") or info.get("gaia_name") or directory)
+        profiles.append({"directory": directory, "name": name, "gaia_id": str(info.get("gaia_id") or ""), "email": email})
     return profiles or [{"directory": "Default", "name": "기본 프로필", "gaia_id": "", "email": ""}]
 
 
