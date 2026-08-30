@@ -315,10 +315,16 @@ class AutoChzzkApp:
         profile_row = tk.Frame(outer, bg=self.BG)
         profile_row.pack(fill="x", pady=(13, 0))
         tk.Label(profile_row, text="사용할 Chrome 프로필", fg=self.TEXT, bg=self.BG, font=("Malgun Gothic", 9, "bold")).pack(side="left")
-        profile_selector = ttk.Combobox(profile_row, textvariable=self.profile_value, values=list(self.profile_labels), state="readonly", width=23, font=("Malgun Gothic", 9))
-        profile_selector.pack(side="right")
-        profile_selector.bind("<<ComboboxSelected>>", self.select_chrome_profile)
-        add_card = tk.Frame(outer, bg=self.SURFACE, padx=17, pady=15); add_card.pack(fill="x", pady=(20, 14))
+        ttk.Button(profile_row, text="프로필 변경", style="Small.TButton", command=self.show_profile_editor, cursor="hand2").pack(side="right")
+        self.current_profile_label = tk.Label(profile_row, text=self.profile_value.get(), fg=self.ACCENT, bg=self.BG, font=("Malgun Gothic", 9, "bold"))
+        self.current_profile_label.pack(side="right", padx=(0, 9))
+        self.profile_editor = tk.Frame(outer, bg=self.SURFACE, padx=14, pady=10)
+        tk.Label(self.profile_editor, text="변경할 Chrome 프로필", fg=self.TEXT, bg=self.SURFACE, font=("Malgun Gothic", 9, "bold")).pack(side="left")
+        self.profile_selector = ttk.Combobox(self.profile_editor, textvariable=self.profile_value, values=list(self.profile_labels), state="readonly", width=20, font=("Malgun Gothic", 9))
+        self.profile_selector.pack(side="left", padx=(10, 8))
+        ttk.Button(self.profile_editor, text="프로필 적용", style="Accent.TButton", command=self.select_chrome_profile, cursor="hand2").pack(side="right")
+        self.add_card = tk.Frame(outer, bg=self.SURFACE, padx=17, pady=15); self.add_card.pack(fill="x", pady=(20, 14))
+        add_card = self.add_card
         tk.Label(add_card, text="채널 추가", fg=self.TEXT, bg=self.SURFACE, font=("Malgun Gothic", 10, "bold")).pack(anchor="w")
         input_row = tk.Frame(add_card, bg=self.SURFACE); input_row.pack(fill="x", pady=(8, 0))
         entry = tk.Entry(input_row, textvariable=self.input_value, bg=self.INPUT, fg=self.TEXT, insertbackground=self.TEXT, relief="flat", font=("Consolas", 10), highlightthickness=1, highlightbackground="#40444F", highlightcolor=self.ACCENT)
@@ -370,15 +376,23 @@ class AutoChzzkApp:
             profile_keys.add(f"email:{self.selected_chrome_profile['email'].lower()}")
         CHROME_TABS.set_selected_profile(profile_keys)
 
-    def select_chrome_profile(self, _event=None) -> None:
+    def show_profile_editor(self) -> None:
+        self.profile_value.set(self.selected_chrome_profile["name"])
+        self.profile_editor.pack(fill="x", pady=(8, 0), before=self.add_card)
+
+    def select_chrome_profile(self) -> None:
         profile = self.profile_labels.get(self.profile_value.get())
-        if profile is None or profile == self.selected_chrome_profile:
+        if profile is None:
+            return
+        self.profile_editor.pack_forget()
+        if profile == self.selected_chrome_profile:
             return
         self.selected_chrome_profile = profile
         self.settings["chrome_profile_directory"] = profile["directory"]
         self._save_settings()
         self._apply_selected_profile()
         self.extension_setup_prompted = False
+        self.current_profile_label.configure(text=profile["name"])
         self._set_status(f"{profile['name']} Chrome 프로필에서만 방송 감지와 자동 접속을 사용합니다.")
         self.root.after(1_000, self._check_extension_connection)
 
