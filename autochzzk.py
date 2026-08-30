@@ -456,6 +456,30 @@ class AutoChzzkApp:
             )
         else:
             webbrowser.open("chrome://extensions", new=1)
+        self.root.after(800, self._ask_extension_installed)
+
+    def _ask_extension_installed(self) -> None:
+        self._show_app_dialog(
+            "Chrome 확장 프로그램 확인",
+            "Chrome 확장 프로그램을 설치하셨습니까?\n\n설치 또는 새로고침을 마쳤다면 ‘설치했습니다’를 눌러 연결을 다시 확인해 주세요.",
+            "설치했습니다",
+            self._retry_extension_connection,
+            "아직 설치 전",
+        )
+
+    def _retry_extension_connection(self) -> None:
+        self.extension_setup_prompted = False
+        self._set_status("Chrome 확장 프로그램 연결을 다시 확인하는 중입니다…")
+        self.root.after(3_000, self._finish_extension_reconnect)
+
+    def _finish_extension_reconnect(self) -> None:
+        if self.stop_event.is_set():
+            return
+        if CHROME_TABS.is_connected():
+            self.extension_setup_prompted = True
+            self._set_status("Chrome 확장 프로그램이 연결되었습니다.")
+            return
+        self._check_extension_connection()
 
     def _check_extension_connection(self) -> None:
         if self.stop_event.is_set() or CHROME_TABS.is_connected() or self.extension_setup_prompted:
