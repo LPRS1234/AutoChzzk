@@ -248,6 +248,7 @@ class AutoChzzkApp:
         root.minsize(540, 520)
         root.configure(bg=self.BG)
         self.input_value, self.status_value = tk.StringVar(), tk.StringVar()
+        self.extension_status_value = tk.StringVar(value="Chrome 확장 프로그램 연결 확인 중…")
         self.settings = self._load_settings()
         self.chrome_profiles = get_chrome_profiles()
         self.profile_labels = {profile["name"]: profile for profile in self.chrome_profiles}
@@ -282,6 +283,7 @@ class AutoChzzkApp:
         self._refresh_list()
         root.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
         root.after((EXTENSION_INITIAL_SYNC_SECONDS + 3) * 1000, self._check_extension_connection)
+        root.after(1_000, self._refresh_extension_status)
         threading.Thread(target=self._monitor, daemon=True).start()
         threading.Thread(target=self._check_saved_channels_on_start, daemon=True).start()
 
@@ -319,6 +321,11 @@ class AutoChzzkApp:
         ttk.Button(profile_row, text="프로필 변경", style="Small.TButton", command=self.show_profile_editor, cursor="hand2").pack(side="right")
         self.current_profile_label = tk.Label(profile_row, text=self.profile_value.get(), fg=self.ACCENT, bg=self.BG, font=("Malgun Gothic", 9, "bold"))
         self.current_profile_label.pack(side="right", padx=(0, 9))
+        extension_row = tk.Frame(outer, bg=self.BG)
+        extension_row.pack(fill="x", pady=(5, 0))
+        self.extension_status_dot = tk.Label(extension_row, text="●", fg=self.MUTED, bg=self.BG, font=("Segoe UI", 8))
+        self.extension_status_dot.pack(side="left", padx=(0, 5))
+        tk.Label(extension_row, textvariable=self.extension_status_value, fg=self.MUTED, bg=self.BG, font=("Malgun Gothic", 8), anchor="w").pack(side="left")
         self.profile_editor = tk.Frame(outer, bg=self.SURFACE, padx=14, pady=10)
         tk.Label(self.profile_editor, text="변경할 Chrome 프로필", fg=self.TEXT, bg=self.SURFACE, font=("Malgun Gothic", 9, "bold")).pack(side="left")
         self.profile_selector = ttk.Combobox(self.profile_editor, textvariable=self.profile_value, values=list(self.profile_labels), state="readonly", width=20, font=("Malgun Gothic", 9))
@@ -378,6 +385,20 @@ class AutoChzzkApp:
             profile_keys.add(f"email:{self.selected_chrome_profile['email'].lower()}")
         CHROME_TABS.set_selected_profile(profile_keys)
 
+    def _set_extension_status(self, message: str, connected: bool | None = None) -> None:
+        self.extension_status_value.set(message)
+        if hasattr(self, "extension_status_dot"):
+            self.extension_status_dot.configure(fg=self.ACCENT if connected else self.DANGER if connected is False else self.MUTED)
+
+    def _refresh_extension_status(self) -> None:
+        if self.stop_event.is_set():
+            return
+        if CHROME_TABS.is_connected():
+            self._set_extension_status("Chrome 확장 프로그램 연결됨", True)
+        else:
+            self._set_extension_status("Chrome 확장 프로그램 연결 안 됨", False)
+        self.root.after(2_000, self._refresh_extension_status)
+
     def show_profile_editor(self) -> None:
         self.profile_value.set(self.selected_chrome_profile["name"])
         self.profile_editor.pack(fill="x", pady=(8, 0), before=self.add_card)
@@ -395,6 +416,7 @@ class AutoChzzkApp:
         self._apply_selected_profile()
         self.extension_setup_prompted = False
         self.current_profile_label.configure(text=profile["name"])
+        self._set_extension_status("Chrome 확장 프로그램 연결 확인 중…")
         self._set_status(f"{profile['name']} Chrome 프로필에서만 방송 감지와 자동 접속을 사용합니다.")
         self.root.after(1_000, self._check_extension_connection)
 
@@ -470,7 +492,8 @@ class AutoChzzkApp:
     def _retry_extension_connection(self) -> None:
         self.extension_setup_prompted = False
         self._set_status("Chrome 확장 프로그램 연결을 다시 확인하는 중입니다…")
-        self.root.after(3_000, self._finish_extension_reconnect)
+        self._set_extension_status("Chrome 확장 프로그램 연결을 다시 확인하는 중…")
+        self.root.after(1_000, self._finish_extension_reconnect)
 
     def _finish_extension_reconnect(self) -> None:
         if self.stop_event.is_set():
@@ -478,12 +501,21 @@ class AutoChzzkApp:
         if CHROME_TABS.is_connected():
             self.extension_setup_prompted = True
             self._set_status("Chrome 확장 프로그램이 연결되었습니다.")
+            self._set_extension_status("Chrome 확장 프로그램 연결됨", True)
             return
-        self._check_extension_connection()
+        self.extension_setup_prompted = True
+        self._set_status("Chrome 확장 프로그램이 아직 연결되지 않았습니다.", True)
+        self._set_extension_status("Chrome 확장 프로그램 연결 안 됨", False)
 
     def _check_extension_connection(self) -> None:
-        if self.stop_event.is_set() or CHROME_TABS.is_connected() or self.extension_setup_prompted:
+        if self.stop_event.is_set():
             return
+        if CHROME_TABS.is_connected():
+            self._set_extension_status("Chrome 확장 프로그램 연결됨", True)
+            return
+        if self.extension_setup_prompted:
+            return
+        self._set_extension_status("Chrome 확장 프로그램 연결 안 됨", False)
         self.extension_setup_prompted = True
         self._show_app_dialog(
             "Chrome 확장 프로그램 연결 필요",
