@@ -25,11 +25,12 @@ APP_NAME = "AutoChzzk"
 MUTEX_NAME = "Local\\AutoChzzk_SingleInstance_1"
 DATA_PATH = Path(__file__).with_name("channels.json")
 LOGO_PATH = Path(__file__).parent / "assets" / "logo" / "app-icon.png"
+ICO_PATH = Path(__file__).parent / "assets" / "logo" / "app-icon.ico"
 LIVE_API_URL = "https://api.chzzk.naver.com/polling/v3.1/channels/{channel_id}/live-status"
 CHANNEL_API_URL = "https://api.chzzk.naver.com/service/v1/channels/{channel_id}"
 LIVE_URL = "https://chzzk.naver.com/live/{channel_id}"
 EXTENSION_PORT = 8765
-EXTENSION_INITIAL_SYNC_SECONDS = 5
+EXTENSION_INITIAL_SYNC_SECONDS = 12
 CHANNEL_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$", re.IGNORECASE)
 URL_ID_PATTERN = re.compile(r"chzzk\.naver\.com/(?:live/)?([0-9a-f]{32})(?:[/?#]|$)", re.IGNORECASE)
 APP_INSTANCE = None
@@ -193,6 +194,7 @@ class AutoChzzkApp:
     def _load_brand_icons(self) -> None:
         if not LOGO_PATH.is_file(): return
         try:
+            if ICO_PATH.is_file(): self.root.iconbitmap(default=str(ICO_PATH))
             self.window_icon = tk.PhotoImage(file=LOGO_PATH)
             self.root.iconphoto(True, self.window_icon)
             header_image = Image.open(LOGO_PATH).convert("RGBA")
@@ -282,8 +284,16 @@ class AutoChzzkApp:
 
     def _make_channel_row(self, channel: dict) -> None:
         row = tk.Frame(self.list_frame, bg=self.INPUT, padx=12, pady=9); row.pack(fill="x", pady=4)
-        details = tk.Frame(row, bg=self.INPUT); details.pack(side="left", fill="x", expand=True)
-        tk.Label(details, text=channel.get("name") or channel["id"], fg=self.TEXT, bg=self.INPUT, font=("Malgun Gothic", 10, "bold"), anchor="w").pack(fill="x")
+        actions = tk.Frame(row, bg=self.INPUT)
+        actions.pack(side="right", anchor="n")
+        active = bool(channel.get("enabled")); label = "감지 ON" if active else "감지 OFF"
+        tk.Button(actions, text=label, command=lambda value=channel["id"]: self.toggle_channel(value), relief="flat", bd=0, cursor="hand2", padx=9, pady=5, font=("Malgun Gothic", 8, "bold"), bg=self.ACCENT if active else "#454954", fg="#08251D" if active else self.TEXT, activebackground="#38EDBB" if active else "#5A5F6B").pack(side="right", padx=(7, 0))
+        ttk.Button(actions, text="삭제", style="Small.TButton", command=lambda value=channel["id"]: self.remove_channel(value)).pack(side="right")
+        tk.Label(actions, text=f"{channel.get('interval', 60)}초", fg=self.MUTED, bg=self.INPUT, font=("Consolas", 9)).pack(side="right", padx=(0, 5))
+        ttk.Button(actions, text="간격 수정", style="Small.TButton", command=lambda value=channel["id"]: self.show_interval_editor(value)).pack(side="right", padx=(0, 8))
+        details = tk.Frame(row, bg=self.INPUT)
+        details.pack(side="left", fill="both", expand=True, padx=(0, 10))
+        tk.Label(details, text=channel.get("name") or channel["id"], fg=self.TEXT, bg=self.INPUT, font=("Malgun Gothic", 10, "bold"), anchor="w", justify="left", wraplength=220).pack(fill="x")
         live_state = self.live_info.get(channel["id"])
         if live_state is None:
             live_text, live_color = "방송 상태 확인 중…", self.MUTED
@@ -291,12 +301,7 @@ class AutoChzzkApp:
             live_text, live_color = f"방송 중 · {live_state[1]}", self.ACCENT
         else:
             live_text, live_color = "현재 방송 중이 아닙니다.", self.MUTED
-        tk.Label(details, text=live_text, fg=live_color, bg=self.INPUT, font=("Malgun Gothic", 8), anchor="w").pack(fill="x", pady=(2, 0))
-        active = bool(channel.get("enabled")); label = "감지 ON" if active else "감지 OFF"
-        tk.Button(row, text=label, command=lambda value=channel["id"]: self.toggle_channel(value), relief="flat", bd=0, cursor="hand2", padx=9, pady=5, font=("Malgun Gothic", 8, "bold"), bg=self.ACCENT if active else "#454954", fg="#08251D" if active else self.TEXT, activebackground="#38EDBB" if active else "#5A5F6B").pack(side="right", padx=(7, 0))
-        ttk.Button(row, text="삭제", style="Small.TButton", command=lambda value=channel["id"]: self.remove_channel(value)).pack(side="right")
-        tk.Label(row, text=f"{channel.get('interval', 60)}초", fg=self.MUTED, bg=self.INPUT, font=("Consolas", 9)).pack(side="right", padx=(0, 5))
-        ttk.Button(row, text="간격 수정", style="Small.TButton", command=lambda value=channel["id"]: self.show_interval_editor(value)).pack(side="right", padx=(0, 8))
+        tk.Label(details, text=live_text, fg=live_color, bg=self.INPUT, font=("Malgun Gothic", 8), anchor="w", justify="left", wraplength=220).pack(fill="x", pady=(2, 0))
 
     def _make_interval_editor(self, channel: dict) -> None:
         editor = tk.Frame(self.list_frame, bg="#373B45", padx=13, pady=10)
@@ -440,6 +445,7 @@ if __name__ == "__main__":
     mutex = None
     if sys.platform == "win32":
         import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("LPRS1234.AutoChzzk")
         mutex = ctypes.windll.kernel32.CreateMutexW(None, False, MUTEX_NAME)
         if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
             request = urllib.request.Request(f"http://127.0.0.1:{EXTENSION_PORT}/show-window", data=b"{}", method="POST")
