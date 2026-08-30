@@ -335,6 +335,10 @@ class AutoChzzkApp:
         controls = tk.Frame(outer, bg=self.BG); controls.pack(fill="x", pady=(0, 7))
         self.count_label = tk.Label(controls, fg=self.TEXT, bg=self.BG, font=("Malgun Gothic", 10, "bold")); self.count_label.pack(side="left")
         tk.Label(controls, text="채널별 확인 간격은 목록에서 수정할 수 있습니다 · 최소 15초", fg=self.MUTED, bg=self.BG, font=("Malgun Gothic", 9)).pack(side="right")
+        status = tk.Frame(outer, bg="#1D2C29", padx=13, pady=9)
+        status.pack(fill="x", pady=(13, 0), side="bottom")
+        self.status_dot = tk.Label(status, text="●", fg=self.ACCENT, bg="#1D2C29", font=("Segoe UI", 10)); self.status_dot.pack(side="left", padx=(0, 7))
+        tk.Label(status, textvariable=self.status_value, fg=self.TEXT, bg="#1D2C29", font=("Malgun Gothic", 9), anchor="w").pack(side="left", fill="x", expand=True)
         list_box = tk.Frame(outer, bg=self.SURFACE); list_box.pack(fill="both", expand=True)
         self.canvas = tk.Canvas(list_box, bg=self.SURFACE, highlightthickness=0)
         scrollbar = ttk.Scrollbar(list_box, orient="vertical", command=self.canvas.yview)
@@ -343,9 +347,6 @@ class AutoChzzkApp:
         self.canvas.configure(yscrollcommand=scrollbar.set); self.canvas.pack(side="left", fill="both", expand=True); scrollbar.pack(side="right", fill="y")
         self.list_frame.bind("<Configure>", lambda _event: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
         self.canvas.bind("<Configure>", lambda event: self.canvas.itemconfigure(self.list_window, width=event.width))
-        status = tk.Frame(outer, bg="#1D2C29", padx=13, pady=9); status.pack(fill="x", pady=(13, 0))
-        self.status_dot = tk.Label(status, text="●", fg=self.ACCENT, bg="#1D2C29", font=("Segoe UI", 10)); self.status_dot.pack(side="left", padx=(0, 7))
-        tk.Label(status, textvariable=self.status_value, fg=self.TEXT, bg="#1D2C29", font=("Malgun Gothic", 9), anchor="w").pack(side="left", fill="x", expand=True)
 
     def _load_channels(self) -> list[dict]:
         try:
