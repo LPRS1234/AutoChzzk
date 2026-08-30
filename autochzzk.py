@@ -27,6 +27,7 @@ except ImportError:
 APP_NAME = "AutoChzzk"
 MUTEX_NAME = "Local\\AutoChzzk_SingleInstance_1"
 DATA_PATH = Path(__file__).with_name("channels.json")
+SETTINGS_PATH = Path(__file__).with_name("settings.json")
 LOGO_PATH = Path(__file__).parent / "assets" / "logo" / "app-icon.png"
 ICO_PATH = Path(__file__).parent / "assets" / "logo" / "app-icon.ico"
 LIVE_API_URL = "https://api.chzzk.naver.com/polling/v3.1/channels/{channel_id}/live-status"
@@ -62,40 +63,63 @@ def get_live_status(channel_id: str) -> tuple[bool, str]:
     return content.get("status") == "OPEN", content.get("liveTitle") or "제목 없는 방송"
 
 
+def get_chrome_profiles() -> list[dict[str, str]]:
+    local_state = Path(os.environ.get("LOCALAPPDATA", "")) / "Google" / "Chrome" / "User Data" / "Local State"
+    try:
+        info_cache = json.loads(local_state.read_text(encoding="utf-8")).get("profile", {}).get("info_cache", {})
+    except (OSError, json.JSONDecodeError):
+        info_cache = {}
+    profiles = []
+    for directory, info in info_cache.items():
+        if not isinstance(directory, str) or not isinstance(info, dict):
+            continue
+        name = info.get("name") or info.get("gaia_name") or directory
+        profiles.append({"directory": directory, "name": str(name), "gaia_id": str(info.get("gaia_id") or ""), "email": str(info.get("user_name") or "")})
+    return profiles or [{"directory": "Default", "name": "기본 프로필", "gaia_id": "", "email": ""}]
+
+
 class ChromeTabState:
     """Short-lived CHZZK tab reports from every installed Chrome profile."""
     def __init__(self) -> None:
-        self.clients: dict[str, tuple[set[str], float]] = {}
+        self.clients: dict[str, tuple[set[str], set[str], float]] = {}
+        self.selected_profile_keys: set[str] = set()
         self.last_focused_client_id: str | None = None
         self.pending_opens: dict[str, tuple[str, str]] = {}
         self.lock = threading.Lock()
 
-    def _fresh_clients(self) -> dict[str, tuple[set[str], float]]:
+    def _fresh_clients(self) -> dict[str, tuple[set[str], set[str], float]]:
         now = time.monotonic()
-        return {client_id: report for client_id, report in self.clients.items() if now - report[1] < 30}
+        return {client_id: report for client_id, report in self.clients.items() if now - report[2] < 30}
 
-    def update(self, client_id: str, channel_ids: set[str], focused: bool) -> None:
+    def set_selected_profile(self, profile_keys: set[str]) -> None:
         with self.lock:
-            self.clients[client_id] = (channel_ids, time.monotonic())
+            self.selected_profile_keys = profile_keys
+
+    def _selected_clients(self) -> dict[str, tuple[set[str], set[str], float]]:
+        return {client_id: report for client_id, report in self._fresh_clients().items() if report[1] & self.selected_profile_keys}
+
+    def update(self, client_id: str, channel_ids: set[str], profile_keys: set[str], focused: bool) -> None:
+        with self.lock:
+            self.clients[client_id] = (channel_ids, profile_keys, time.monotonic())
             self.clients = self._fresh_clients()
             if focused:
                 self.last_focused_client_id = client_id
 
     def is_watched(self, channel_id: str) -> bool:
         with self.lock:
-            return any(channel_id in channel_ids for channel_ids, _updated_at in self._fresh_clients().values())
+            return any(channel_id in channel_ids for channel_ids, _profile_keys, _updated_at in self._selected_clients().values())
 
     def is_connected(self) -> bool:
         with self.lock:
-            return bool(self._fresh_clients())
+            return bool(self._selected_clients())
 
     def queue_background_open(self, url: str) -> str:
         command_id = uuid.uuid4().hex
         with self.lock:
-            clients = self._fresh_clients()
+            clients = self._selected_clients()
             if not clients:
                 return ""
-            target_client_id = self.last_focused_client_id if self.last_focused_client_id in clients else max(clients, key=lambda client_id: clients[client_id][1])
+            target_client_id = self.last_focused_client_id if self.last_focused_client_id in clients else max(clients, key=lambda client_id: clients[client_id][2])
             self.pending_opens[command_id] = (url, target_client_id)
         return command_id
 
@@ -153,7 +177,14 @@ class ExtensionRequestHandler(BaseHTTPRequestHandler):
                 self._reply(400)
                 return
             channel_ids = {value.lower() for value in payload.get("channelIds", []) if isinstance(value, str) and CHANNEL_ID_PATTERN.fullmatch(value)}
-            CHROME_TABS.update(client_id, channel_ids, bool(payload.get("focused")))
+            profile_keys = set()
+            profile_gaia_id = payload.get("profileGaiaId", "")
+            profile_email = payload.get("profileEmail", "")
+            if isinstance(profile_gaia_id, str) and profile_gaia_id:
+                profile_keys.add(f"gaia:{profile_gaia_id}")
+            if isinstance(profile_email, str) and profile_email:
+                profile_keys.add(f"email:{profile_email.lower()}")
+            CHROME_TABS.update(client_id, channel_ids, profile_keys, bool(payload.get("focused")))
             completed = [value for value in payload.get("completedCommandIds", []) if isinstance(value, str)]
             CHROME_TABS.acknowledge_commands(client_id, completed)
             self._reply(payload={"ok": True, "openCommands": CHROME_TABS.pending_commands(client_id)})
@@ -216,6 +247,13 @@ class AutoChzzkApp:
         root.minsize(540, 520)
         root.configure(bg=self.BG)
         self.input_value, self.status_value = tk.StringVar(), tk.StringVar()
+        self.settings = self._load_settings()
+        self.chrome_profiles = get_chrome_profiles()
+        self.profile_labels = {profile["name"]: profile for profile in self.chrome_profiles}
+        saved_profile_directory = self.settings.get("chrome_profile_directory")
+        self.selected_chrome_profile = next((profile for profile in self.chrome_profiles if profile["directory"] == saved_profile_directory), self.chrome_profiles[0])
+        self.profile_value = tk.StringVar(value=self.selected_chrome_profile["name"])
+        self._apply_selected_profile()
         self.channels = self._load_channels()
         # Migrate channels created by versions before per-channel intervals.
         self._save_channels()
@@ -274,6 +312,12 @@ class AutoChzzkApp:
         ttk.Button(heading, text="종료", style="Dark.TButton", command=self.on_close, cursor="hand2").pack(side="right", padx=(0, 0), pady=(4, 0))
         tk.Label(heading, text=APP_NAME, fg=self.TEXT, bg=self.BG, font=("Malgun Gothic", 18, "bold")).pack(anchor="w")
         tk.Label(heading, text="저장한 채널의 방송 시작을 자동 감지합니다", fg=self.MUTED, bg=self.BG, font=("Malgun Gothic", 9)).pack(anchor="w")
+        profile_row = tk.Frame(outer, bg=self.BG)
+        profile_row.pack(fill="x", pady=(13, 0))
+        tk.Label(profile_row, text="사용할 Chrome 프로필", fg=self.TEXT, bg=self.BG, font=("Malgun Gothic", 9, "bold")).pack(side="left")
+        profile_selector = ttk.Combobox(profile_row, textvariable=self.profile_value, values=list(self.profile_labels), state="readonly", width=23, font=("Malgun Gothic", 9))
+        profile_selector.pack(side="right")
+        profile_selector.bind("<<ComboboxSelected>>", self.select_chrome_profile)
         add_card = tk.Frame(outer, bg=self.SURFACE, padx=17, pady=15); add_card.pack(fill="x", pady=(20, 14))
         tk.Label(add_card, text="채널 추가", fg=self.TEXT, bg=self.SURFACE, font=("Malgun Gothic", 10, "bold")).pack(anchor="w")
         input_row = tk.Frame(add_card, bg=self.SURFACE); input_row.pack(fill="x", pady=(8, 0))
@@ -307,6 +351,36 @@ class AutoChzzkApp:
                 channels.append(item)
             return channels
         except (FileNotFoundError, json.JSONDecodeError): return []
+
+    def _load_settings(self) -> dict:
+        try:
+            loaded = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
+            return loaded if isinstance(loaded, dict) else {}
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {}
+
+    def _save_settings(self) -> None:
+        SETTINGS_PATH.write_text(json.dumps(self.settings, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def _apply_selected_profile(self) -> None:
+        profile_keys = set()
+        if self.selected_chrome_profile.get("gaia_id"):
+            profile_keys.add(f"gaia:{self.selected_chrome_profile['gaia_id']}")
+        if self.selected_chrome_profile.get("email"):
+            profile_keys.add(f"email:{self.selected_chrome_profile['email'].lower()}")
+        CHROME_TABS.set_selected_profile(profile_keys)
+
+    def select_chrome_profile(self, _event=None) -> None:
+        profile = self.profile_labels.get(self.profile_value.get())
+        if profile is None or profile == self.selected_chrome_profile:
+            return
+        self.selected_chrome_profile = profile
+        self.settings["chrome_profile_directory"] = profile["directory"]
+        self._save_settings()
+        self._apply_selected_profile()
+        self.extension_setup_prompted = False
+        self._set_status(f"{profile['name']} Chrome 프로필에서만 방송 감지와 자동 접속을 사용합니다.")
+        self.root.after(1_000, self._check_extension_connection)
 
     def _save_channels(self) -> None:
         DATA_PATH.write_text(json.dumps(self.channels, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -360,17 +434,10 @@ class AutoChzzkApp:
         ]
         chrome_path = next((path for path in chrome_paths if path.is_file()), None)
         if chrome_path is not None:
-            profile_names = ["Default"]
-            local_state = Path(os.environ.get("LOCALAPPDATA", "")) / "Google" / "Chrome" / "User Data" / "Local State"
-            try:
-                profile_names = list(json.loads(local_state.read_text(encoding="utf-8")).get("profile", {}).get("info_cache", {}).keys()) or profile_names
-            except (OSError, json.JSONDecodeError):
-                pass
-            for profile_name in profile_names:
-                subprocess.Popen(
-                    [str(chrome_path), f"--profile-directory={profile_name}", "--new-window", "chrome://extensions/"],
-                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-                )
+            subprocess.Popen(
+                [str(chrome_path), f"--profile-directory={self.selected_chrome_profile['directory']}", "--new-window", "chrome://extensions/"],
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
         else:
             webbrowser.open("chrome://extensions", new=1)
 
@@ -380,8 +447,8 @@ class AutoChzzkApp:
         self.extension_setup_prompted = True
         self._show_app_dialog(
             "Chrome 확장 프로그램 연결 필요",
-            "AutoChzzk 확장 프로그램을 찾지 못했습니다.\n\n‘Chrome 확장 프로그램 열기’에서 개발자 모드를 켠 뒤, ‘압축해제된 확장 프로그램 로드’를 눌러 AutoChzzk 폴더의 chrome_extension 폴더를 선택해 주세요. Chrome 프로필이 3개라면 세 프로필 모두에서 이 과정을 반복해야 합니다.",
-            "모든 Chrome 프로필에서 열기",
+            f"선택한 Chrome 프로필({self.selected_chrome_profile['name']})에서 AutoChzzk 확장 프로그램을 찾지 못했습니다.\n\n‘Chrome 확장 프로그램 열기’에서 개발자 모드를 켠 뒤, ‘압축해제된 확장 프로그램 로드’를 눌러 AutoChzzk 폴더의 chrome_extension 폴더를 선택해 주세요. 선택하지 않은 Chrome 프로필에는 설치할 필요가 없습니다.",
+            "선택한 Chrome 프로필에서 열기",
             self._open_chrome_extensions,
             "나중에",
         )

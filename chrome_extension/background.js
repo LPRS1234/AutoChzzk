@@ -19,6 +19,15 @@ async function isProfileFocused() {
   }
 }
 
+async function getProfileIdentity() {
+  try {
+    const profile = await chrome.identity.getProfileUserInfo({ accountStatus: "ANY" });
+    return { profileGaiaId: profile.id || "", profileEmail: profile.email || "" };
+  } catch {
+    return { profileGaiaId: "", profileEmail: "" };
+  }
+}
+
 async function ensurePoller() {
   try {
     await chrome.offscreen.createDocument({
@@ -59,11 +68,11 @@ async function reportOpenChzzkLives() {
     const channelIds = tabs
       .map((tab) => tab.url?.match(LIVE_URL_PATTERN)?.[1]?.toLowerCase())
       .filter(Boolean);
-    const [clientId, focused] = await Promise.all([getClientId(), isProfileFocused()]);
+    const [clientId, focused, profileIdentity] = await Promise.all([getClientId(), isProfileFocused(), getProfileIdentity()]);
     const response = await fetch(ENDPOINT, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ clientId, focused, channelIds, completedCommandIds: [...completedCommandIds] }),
+      body: JSON.stringify({ clientId, focused, ...profileIdentity, channelIds, completedCommandIds: [...completedCommandIds] }),
     });
     if (response.ok) await executeOpenCommands((await response.json()).openCommands || []);
   } catch {
