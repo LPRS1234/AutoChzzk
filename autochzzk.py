@@ -27,7 +27,8 @@ except ImportError:
 APP_NAME = "AutoChzzk"
 MUTEX_NAME = "Local\\AutoChzzk_SingleInstance_1"
 if getattr(sys, "frozen", False):
-    APP_DIR = Path(sys.executable).parent
+    APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / APP_NAME
+    APP_DIR.mkdir(parents=True, exist_ok=True)
     RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", APP_DIR))
 else:
     APP_DIR = Path(__file__).parent
