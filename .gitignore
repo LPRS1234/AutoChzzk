@@ -4,3 +4,4 @@ channels.json
 settings.json
 build/
 dist/
+*.spec
