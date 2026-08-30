@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import subprocess
 import sys
 import threading
 import tkinter as tk
@@ -334,9 +336,18 @@ class AutoChzzkApp:
         dialog.focus_set()
 
     def _open_chrome_extensions(self) -> None:
-        # Let Windows/Chrome route the internal URL to the currently active
-        # browser context instead of launching a separate Chrome executable.
-        webbrowser.open("chrome://extensions", new=0)
+        chrome_paths = [
+            Path(os.environ.get("PROGRAMFILES", "")) / "Google" / "Chrome" / "Application" / "chrome.exe",
+            Path(os.environ.get("PROGRAMFILES(X86)", "")) / "Google" / "Chrome" / "Application" / "chrome.exe",
+            Path(os.environ.get("LOCALAPPDATA", "")) / "Google" / "Chrome" / "Application" / "chrome.exe",
+        ]
+        chrome_path = next((path for path in chrome_paths if path.is_file()), None)
+        if chrome_path is not None:
+            # Start Chrome explicitly and make its new window navigate to the
+            # extension manager, instead of relying on the default browser.
+            subprocess.Popen([str(chrome_path), "--new-window", "chrome://extensions"], creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        else:
+            webbrowser.open("chrome://extensions", new=1)
 
     def _check_extension_connection(self) -> None:
         if self.stop_event.is_set() or CHROME_TABS.is_connected() or self.extension_setup_prompted:
@@ -344,7 +355,7 @@ class AutoChzzkApp:
         self.extension_setup_prompted = True
         self._show_app_dialog(
             "Chrome 확장 프로그램 연결 필요",
-            "AutoChzzk 확장 프로그램을 찾지 못했습니다.\n\n‘Chrome 확장 프로그램 열기’에서 개발자 모드를 켠 뒤, ‘압축해제된 확장 프로그램 로드’를 눌러 AutoChzzk 폴더의 chrome_extension 폴더를 선택해 주세요. Chrome 프로필을 여러 개 쓴다면 방송을 보는 각 프로필에 따로 설치해야 합니다.",
+            "AutoChzzk 확장 프로그램을 찾지 못했습니다.\n\n‘Chrome 확장 프로그램 열기’에서 개발자 모드를 켠 뒤, ‘압축해제된 확장 프로그램 로드’를 눌러 AutoChzzk 폴더의 chrome_extension 폴더를 선택해 주세요. Chrome 프로필이 3개라면 세 프로필 모두에서 이 과정을 반복해야 합니다.",
             "Chrome 확장 프로그램 열기",
             self._open_chrome_extensions,
             "나중에",
