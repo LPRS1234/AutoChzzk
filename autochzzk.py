@@ -502,6 +502,7 @@ class AutoChzzkApp:
             self.extension_setup_prompted = True
             self._set_status("Chrome 확장 프로그램이 연결되었습니다.")
             self._set_extension_status("Chrome 확장 프로그램 연결됨", True)
+            threading.Thread(target=self._open_current_lives_after_extension_connect, daemon=True).start()
             return
         self.extension_setup_prompted = True
         self._set_status("Chrome 확장 프로그램이 아직 연결되지 않았습니다.", True)
@@ -512,6 +513,9 @@ class AutoChzzkApp:
             return
         if CHROME_TABS.is_connected():
             self._set_extension_status("Chrome 확장 프로그램 연결됨", True)
+            if not self.extension_setup_prompted:
+                self.extension_setup_prompted = True
+                threading.Thread(target=self._open_current_lives_after_extension_connect, daemon=True).start()
             return
         if self.extension_setup_prompted:
             return
@@ -524,6 +528,19 @@ class AutoChzzkApp:
             self._open_chrome_extensions,
             "나중에",
         )
+
+    def _open_current_lives_after_extension_connect(self) -> None:
+        """Open broadcasts that were already live while the extension was disconnected."""
+        for channel in [dict(item) for item in self.channels if item.get("enabled")]:
+            if self.stop_event.is_set():
+                return
+            try:
+                is_live, title = get_live_status(channel["id"])
+            except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError, TimeoutError):
+                continue
+            self._ui(self._record_live_status, channel["id"], is_live, title)
+            if is_live:
+                self._ui(self._open_live, channel, title)
 
     def add_channel(self) -> None:
         channel_id = extract_channel_id(self.input_value.get())
