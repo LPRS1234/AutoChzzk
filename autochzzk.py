@@ -26,10 +26,16 @@ except ImportError:
 
 APP_NAME = "AutoChzzk"
 MUTEX_NAME = "Local\\AutoChzzk_SingleInstance_1"
-DATA_PATH = Path(__file__).with_name("channels.json")
-SETTINGS_PATH = Path(__file__).with_name("settings.json")
-LOGO_PATH = Path(__file__).parent / "assets" / "logo" / "app-icon.png"
-ICO_PATH = Path(__file__).parent / "assets" / "logo" / "app-icon.ico"
+if getattr(sys, "frozen", False):
+    APP_DIR = Path(sys.executable).parent
+    RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", APP_DIR))
+else:
+    APP_DIR = Path(__file__).parent
+    RESOURCE_DIR = APP_DIR
+DATA_PATH = APP_DIR / "channels.json"
+SETTINGS_PATH = APP_DIR / "settings.json"
+LOGO_PATH = RESOURCE_DIR / "assets" / "logo" / "app-icon.png"
+ICO_PATH = RESOURCE_DIR / "assets" / "logo" / "app-icon.ico"
 LIVE_API_URL = "https://api.chzzk.naver.com/polling/v3.1/channels/{channel_id}/live-status"
 CHANNEL_API_URL = "https://api.chzzk.naver.com/service/v1/channels/{channel_id}"
 LIVE_URL = "https://chzzk.naver.com/live/{channel_id}"
