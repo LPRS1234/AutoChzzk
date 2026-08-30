@@ -7,6 +7,7 @@ import sys
 import threading
 import tkinter as tk
 import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import urllib.error
 import urllib.request
@@ -27,7 +28,7 @@ LIVE_API_URL = "https://api.chzzk.naver.com/polling/v3.1/channels/{channel_id}/l
 CHANNEL_API_URL = "https://api.chzzk.naver.com/service/v1/channels/{channel_id}"
 LIVE_URL = "https://chzzk.naver.com/live/{channel_id}"
 EXTENSION_PORT = 8765
-EXTENSION_INITIAL_SYNC_SECONDS = 32
+EXTENSION_INITIAL_SYNC_SECONDS = 5
 CHANNEL_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$", re.IGNORECASE)
 URL_ID_PATTERN = re.compile(r"chzzk\.naver\.com/(?:live/)?([0-9a-f]{32})(?:[/?#]|$)", re.IGNORECASE)
 APP_INSTANCE = None
@@ -61,6 +62,7 @@ class ChromeTabState:
     def __init__(self) -> None:
         self.channel_ids: set[str] = set()
         self.updated_at = 0.0
+        self.pending_opens: dict[str, str] = {}
         self.lock = threading.Lock()
 
     def update(self, channel_ids: set[str]) -> None:
@@ -72,18 +74,44 @@ class ChromeTabState:
         with self.lock:
             return time.monotonic() - self.updated_at < 30 and channel_id in self.channel_ids
 
+    def is_connected(self) -> bool:
+        with self.lock:
+            return time.monotonic() - self.updated_at < 5
+
+    def queue_background_open(self, url: str) -> str:
+        command_id = uuid.uuid4().hex
+        with self.lock:
+            self.pending_opens[command_id] = url
+        return command_id
+
+    def pending_commands(self) -> list[dict[str, str]]:
+        with self.lock:
+            return [{"id": command_id, "url": url} for command_id, url in self.pending_opens.items()]
+
+    def acknowledge_commands(self, command_ids: list[str]) -> None:
+        with self.lock:
+            for command_id in command_ids: self.pending_opens.pop(command_id, None)
+
+    def is_pending(self, command_id: str) -> bool:
+        with self.lock:
+            return command_id in self.pending_opens
+
+    def discard_command(self, command_id: str) -> None:
+        with self.lock:
+            self.pending_opens.pop(command_id, None)
+
 
 CHROME_TABS = ChromeTabState()
 
 
 class ExtensionRequestHandler(BaseHTTPRequestHandler):
-    def _reply(self, status: int = 200) -> None:
+    def _reply(self, status: int = 200, payload: dict | None = None) -> None:
         self.send_response(status)
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
         self.send_header("Content-Type", "application/json")
         self.end_headers()
-        self.wfile.write(b'{"ok":true}')
+        self.wfile.write(json.dumps(payload or {"ok": True}).encode("utf-8"))
 
     def do_OPTIONS(self) -> None:  # noqa: N802
         self._reply()
@@ -100,11 +128,13 @@ class ExtensionRequestHandler(BaseHTTPRequestHandler):
             self._reply(404)
             return
         try:
-            size = min(int(self.headers.get("Content-Length", "0")), 16_384)
+            size = max(0, min(int(self.headers.get("Content-Length", "0")), 16_384))
             payload = json.loads(self.rfile.read(size).decode("utf-8"))
             channel_ids = {value.lower() for value in payload.get("channelIds", []) if isinstance(value, str) and CHANNEL_ID_PATTERN.fullmatch(value)}
             CHROME_TABS.update(channel_ids)
-            self._reply()
+            completed = [value for value in payload.get("completedCommandIds", []) if isinstance(value, str)]
+            CHROME_TABS.acknowledge_commands(completed)
+            self._reply(payload={"ok": True, "openCommands": CHROME_TABS.pending_commands()})
         except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
             self._reply(400)
 
@@ -339,7 +369,21 @@ class AutoChzzkApp:
         if CHROME_TABS.is_watched(channel["id"]):
             self._set_status(f"{channel.get('name', channel['id'])} 방송은 Chrome에서 이미 시청 중입니다.")
             return
+        live_url = LIVE_URL.format(channel_id=channel["id"])
+        if CHROME_TABS.is_connected():
+            command_id = CHROME_TABS.queue_background_open(live_url)
+            self._set_status(f"방송 시작 감지: {channel.get('name', channel['id'])} · Chrome 백그라운드 탭으로 여는 중")
+            self.root.after(6_000, lambda: self._fallback_open(command_id, live_url, channel, title))
+            return
         self._set_status(f"방송 시작 감지: {channel.get('name', channel['id'])} · {title}"); self.root.bell(); webbrowser.open(LIVE_URL.format(channel_id=channel["id"]), new=2)
+
+    def _fallback_open(self, command_id: str, live_url: str, channel: dict, title: str) -> None:
+        """Open normally only if Chrome's companion did not acknowledge the command."""
+        if not CHROME_TABS.is_pending(command_id): return
+        CHROME_TABS.discard_command(command_id)
+        self._set_status(f"방송 시작 감지: {channel.get('name', channel['id'])} · {title}")
+        self.root.bell()
+        webbrowser.open(live_url, new=2)
 
     def _set_status(self, message: str, is_error: bool = False) -> None:
         self.status_value.set(message); self.status_dot.configure(fg=self.DANGER if is_error else self.ACCENT)

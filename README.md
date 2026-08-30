@@ -31,4 +31,4 @@ python -m pip install -r requirements.txt
 
 ## Chrome에서 이미 보고 있는 방송 열기 방지
 
-`chrome_extension` 폴더의 안내에 따라 **AutoChzzk Chrome Companion** 확장 프로그램을 설치하면, Chrome에 이미 열려 있는 치지직 방송과 같은 채널은 AutoChzzk가 새 탭으로 열지 않습니다. 확장 프로그램은 열린 방송 URL에서 채널 ID만 읽어 로컬 앱(`127.0.0.1`)에 전달하며 외부 서버와 통신하지 않습니다. 앱 시작 직후에는 확장 프로그램의 탭 상태를 받기 위해 최대 약 32초 동안 방송 페이지 열기를 기다립니다.
+`chrome_extension` 폴더의 안내에 따라 **AutoChzzk Chrome Companion** 확장 프로그램을 설치하면, Chrome에 이미 열려 있는 치지직 방송과 같은 채널은 AutoChzzk가 새 탭으로 열지 않습니다. 확장 프로그램은 열린 방송 URL에서 채널 ID만 읽어 로컬 앱(`127.0.0.1`)에 전달하며 외부 서버와 통신하지 않습니다. Chrome이 이미 실행 중이면 새 감지 방송은 비활성 백그라운드 탭으로 열어 현재 작업을 방해하지 않습니다.

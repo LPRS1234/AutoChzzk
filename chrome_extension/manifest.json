@@ -3,7 +3,8 @@
   "name": "AutoChzzk Chrome Companion",
   "version": "1.0.0",
   "description": "Prevents AutoChzzk from reopening CHZZK broadcasts already open in Chrome.",
-  "permissions": ["tabs", "alarms"],
+  "minimum_chrome_version": "109",
+  "permissions": ["tabs", "alarms", "offscreen"],
   "host_permissions": [
     "https://chzzk.naver.com/*",
     "http://127.0.0.1:8765/*"
