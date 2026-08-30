@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "AutoChzzk Chrome Companion",
+  "version": "1.0.0",
+  "description": "Prevents AutoChzzk from reopening CHZZK broadcasts already open in Chrome.",
+  "permissions": ["tabs", "alarms"],
+  "host_permissions": [
+    "https://chzzk.naver.com/*",
+    "http://127.0.0.1:8765/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "AutoChzzk 연결됨"
+  }
+}

@@ -1,0 +1,384 @@
+"""AutoChzzk - open saved CHZZK channels when they start a live broadcast."""
+from __future__ import annotations
+
+import json
+import re
+import sys
+import threading
+import tkinter as tk
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import urllib.error
+import urllib.request
+import webbrowser
+from pathlib import Path
+from tkinter import messagebox, ttk
+
+try:
+    import pystray
+    from PIL import Image, ImageDraw
+except ImportError:
+    pystray = None
+
+APP_NAME = "AutoChzzk"
+MUTEX_NAME = "Local\\AutoChzzk_SingleInstance_1"
+DATA_PATH = Path(__file__).with_name("channels.json")
+LIVE_API_URL = "https://api.chzzk.naver.com/polling/v3.1/channels/{channel_id}/live-status"
+CHANNEL_API_URL = "https://api.chzzk.naver.com/service/v1/channels/{channel_id}"
+LIVE_URL = "https://chzzk.naver.com/live/{channel_id}"
+EXTENSION_PORT = 8765
+EXTENSION_INITIAL_SYNC_SECONDS = 32
+CHANNEL_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$", re.IGNORECASE)
+URL_ID_PATTERN = re.compile(r"chzzk\.naver\.com/(?:live/)?([0-9a-f]{32})(?:[/?#]|$)", re.IGNORECASE)
+APP_INSTANCE = None
+
+
+def extract_channel_id(value: str) -> str | None:
+    value = value.strip()
+    if CHANNEL_ID_PATTERN.fullmatch(value):
+        return value.lower()
+    match = URL_ID_PATTERN.search(value)
+    return match.group(1).lower() if match else None
+
+
+def request_content(url: str) -> dict:
+    request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 AutoChzzk/1.1", "Accept": "application/json"})
+    with urllib.request.urlopen(request, timeout=15) as response:
+        return json.load(response).get("content") or {}
+
+
+def get_channel_name(channel_id: str) -> str:
+    return request_content(CHANNEL_API_URL.format(channel_id=channel_id)).get("channelName") or channel_id
+
+
+def get_live_status(channel_id: str) -> tuple[bool, str]:
+    content = request_content(LIVE_API_URL.format(channel_id=channel_id))
+    return content.get("status") == "OPEN", content.get("liveTitle") or "제목 없는 방송"
+
+
+class ChromeTabState:
+    """The extension's short-lived view of CHZZK live tabs open in Chrome."""
+    def __init__(self) -> None:
+        self.channel_ids: set[str] = set()
+        self.updated_at = 0.0
+        self.lock = threading.Lock()
+
+    def update(self, channel_ids: set[str]) -> None:
+        with self.lock:
+            self.channel_ids = channel_ids
+            self.updated_at = time.monotonic()
+
+    def is_watched(self, channel_id: str) -> bool:
+        with self.lock:
+            return time.monotonic() - self.updated_at < 30 and channel_id in self.channel_ids
+
+
+CHROME_TABS = ChromeTabState()
+
+
+class ExtensionRequestHandler(BaseHTTPRequestHandler):
+    def _reply(self, status: int = 200) -> None:
+        self.send_response(status)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(b'{"ok":true}')
+
+    def do_OPTIONS(self) -> None:  # noqa: N802
+        self._reply()
+
+    def do_POST(self) -> None:  # noqa: N802
+        if self.path == "/show-window":
+            if APP_INSTANCE is not None:
+                APP_INSTANCE._ui(APP_INSTANCE._restore_window)
+                self._reply()
+            else:
+                self._reply(503)
+            return
+        if self.path != "/chzzk-tabs":
+            self._reply(404)
+            return
+        try:
+            size = min(int(self.headers.get("Content-Length", "0")), 16_384)
+            payload = json.loads(self.rfile.read(size).decode("utf-8"))
+            channel_ids = {value.lower() for value in payload.get("channelIds", []) if isinstance(value, str) and CHANNEL_ID_PATTERN.fullmatch(value)}
+            CHROME_TABS.update(channel_ids)
+            self._reply()
+        except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
+            self._reply(400)
+
+    def log_message(self, _format: str, *_args) -> None:
+        return
+
+
+def start_extension_server() -> ThreadingHTTPServer | None:
+    try:
+        server = ThreadingHTTPServer(("127.0.0.1", EXTENSION_PORT), ExtensionRequestHandler)
+    except OSError:
+        return None
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+class AutoChzzkApp:
+    BG, SURFACE, INPUT = "#16171D", "#22242C", "#2C2F38"
+    ACCENT, TEXT, MUTED, DANGER = "#00E5A8", "#F4F6F8", "#A7ABB7", "#FF6B7A"
+
+    def __init__(self, root: tk.Tk) -> None:
+        self.root = root
+        root.title(APP_NAME)
+        root.geometry("620x630")
+        root.minsize(540, 520)
+        root.configure(bg=self.BG)
+        self.input_value, self.status_value = tk.StringVar(), tk.StringVar()
+        self.channels = self._load_channels()
+        # Migrate channels created by versions before per-channel intervals.
+        self._save_channels()
+        self.was_live: dict[str, bool] = {}
+        self.live_info: dict[str, tuple[bool, str]] = {}
+        self.editing_channel_id: str | None = None
+        # Delay the normal polling loop while the startup check runs, so every
+        # enabled saved channel is checked exactly once as soon as the app opens.
+        self.last_checked: dict[str, float] = {channel["id"]: time.monotonic() for channel in self.channels if channel.get("enabled")}
+        self.stop_event = threading.Event()
+        self.tray_icon = None
+        self.extension_server = start_extension_server()
+        # Chrome extensions can be asleep while the desktop app starts. Wait
+        # for one periodic tab report before opening any startup-detected live.
+        self.allow_browser_open_after = time.monotonic() + EXTENSION_INITIAL_SYNC_SECONDS
+        self._configure_styles()
+        self._build_ui()
+        global APP_INSTANCE
+        APP_INSTANCE = self
+        self._refresh_list()
+        root.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
+        threading.Thread(target=self._monitor, daemon=True).start()
+        threading.Thread(target=self._check_saved_channels_on_start, daemon=True).start()
+
+    def _configure_styles(self) -> None:
+        style = ttk.Style(); style.theme_use("clam")
+        style.configure("Accent.TButton", background=self.ACCENT, foreground="#08251D", borderwidth=0, font=("Malgun Gothic", 10, "bold"), padding=(13, 9))
+        style.map("Accent.TButton", background=[("active", "#38EDBB")])
+        style.configure("Dark.TButton", background="#3A3D47", foreground=self.TEXT, borderwidth=0, font=("Malgun Gothic", 9, "bold"), padding=(10, 7))
+        style.map("Dark.TButton", background=[("active", "#50545F")])
+        style.configure("Small.TButton", background="#3A3D47", foreground=self.TEXT, borderwidth=0, font=("Malgun Gothic", 8, "bold"), padding=(5, 5))
+        style.map("Small.TButton", background=[("active", "#50545F")])
+
+    def _build_ui(self) -> None:
+        outer = tk.Frame(self.root, bg=self.BG, padx=30, pady=24); outer.pack(fill="both", expand=True)
+        tk.Label(outer, text="●", fg=self.ACCENT, bg=self.BG, font=("Segoe UI", 22, "bold")).pack(side="left")
+        heading = tk.Frame(outer, bg=self.BG); heading.pack(fill="x", padx=(8, 0))
+        ttk.Button(heading, text="종료", style="Dark.TButton", command=self.on_close).pack(side="right", padx=(0, 0), pady=(4, 0))
+        tk.Label(heading, text=APP_NAME, fg=self.TEXT, bg=self.BG, font=("Malgun Gothic", 18, "bold")).pack(anchor="w")
+        tk.Label(heading, text="저장한 채널의 방송 시작을 자동 감지합니다", fg=self.MUTED, bg=self.BG, font=("Malgun Gothic", 9)).pack(anchor="w")
+        add_card = tk.Frame(outer, bg=self.SURFACE, padx=17, pady=15); add_card.pack(fill="x", pady=(20, 14))
+        tk.Label(add_card, text="채널 추가", fg=self.TEXT, bg=self.SURFACE, font=("Malgun Gothic", 10, "bold")).pack(anchor="w")
+        input_row = tk.Frame(add_card, bg=self.SURFACE); input_row.pack(fill="x", pady=(8, 0))
+        entry = tk.Entry(input_row, textvariable=self.input_value, bg=self.INPUT, fg=self.TEXT, insertbackground=self.TEXT, relief="flat", font=("Consolas", 10), highlightthickness=1, highlightbackground="#40444F", highlightcolor=self.ACCENT)
+        entry.pack(side="left", fill="x", expand=True, ipady=9); entry.bind("<Return>", lambda _event: self.add_channel())
+        ttk.Button(input_row, text="등록", style="Accent.TButton", command=self.add_channel).pack(side="left", padx=(8, 0))
+        tk.Label(add_card, text="치지직 채널 URL 또는 32자리 채널 ID", fg=self.MUTED, bg=self.SURFACE, font=("Malgun Gothic", 8)).pack(anchor="w", pady=(5, 0))
+        controls = tk.Frame(outer, bg=self.BG); controls.pack(fill="x", pady=(0, 7))
+        self.count_label = tk.Label(controls, fg=self.TEXT, bg=self.BG, font=("Malgun Gothic", 10, "bold")); self.count_label.pack(side="left")
+        tk.Label(controls, text="채널별 확인 간격은 목록에서 수정할 수 있습니다 · 최소 15초", fg=self.MUTED, bg=self.BG, font=("Malgun Gothic", 9)).pack(side="right")
+        list_box = tk.Frame(outer, bg=self.SURFACE); list_box.pack(fill="both", expand=True)
+        self.canvas = tk.Canvas(list_box, bg=self.SURFACE, highlightthickness=0)
+        scrollbar = ttk.Scrollbar(list_box, orient="vertical", command=self.canvas.yview)
+        self.list_frame = tk.Frame(self.canvas, bg=self.SURFACE, padx=12, pady=10)
+        self.list_window = self.canvas.create_window((0, 0), window=self.list_frame, anchor="nw")
+        self.canvas.configure(yscrollcommand=scrollbar.set); self.canvas.pack(side="left", fill="both", expand=True); scrollbar.pack(side="right", fill="y")
+        self.list_frame.bind("<Configure>", lambda _event: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        self.canvas.bind("<Configure>", lambda event: self.canvas.itemconfigure(self.list_window, width=event.width))
+        status = tk.Frame(outer, bg="#1D2C29", padx=13, pady=9); status.pack(fill="x", pady=(13, 0))
+        self.status_dot = tk.Label(status, text="●", fg=self.ACCENT, bg="#1D2C29", font=("Segoe UI", 10)); self.status_dot.pack(side="left", padx=(0, 7))
+        tk.Label(status, textvariable=self.status_value, fg=self.TEXT, bg="#1D2C29", font=("Malgun Gothic", 9), anchor="w").pack(side="left", fill="x")
+
+    def _load_channels(self) -> list[dict]:
+        try:
+            loaded = json.loads(DATA_PATH.read_text(encoding="utf-8"))
+            channels = []
+            for item in loaded:
+                if not isinstance(item, dict) or not CHANNEL_ID_PATTERN.fullmatch(item.get("id", "")): continue
+                try: item["interval"] = max(15, int(item.get("interval", 60)))
+                except (TypeError, ValueError): item["interval"] = 60
+                channels.append(item)
+            return channels
+        except (FileNotFoundError, json.JSONDecodeError): return []
+
+    def _save_channels(self) -> None:
+        DATA_PATH.write_text(json.dumps(self.channels, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    def add_channel(self) -> None:
+        channel_id = extract_channel_id(self.input_value.get())
+        if not channel_id: messagebox.showerror(APP_NAME, "치지직 채널 URL 또는 32자리 채널 ID를 정확히 입력해 주세요."); return
+        if any(channel["id"] == channel_id for channel in self.channels): messagebox.showinfo(APP_NAME, "이미 등록된 채널입니다."); return
+        self._set_status("채널 정보를 불러오는 중…"); self.root.update_idletasks()
+        try: name = get_channel_name(channel_id)
+        except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError, TimeoutError): name = channel_id
+        new_channel = {"id": channel_id, "name": name, "enabled": True, "interval": 60}
+        self.channels.append(new_channel); self._save_channels(); self.input_value.set(""); self._refresh_list()
+        self.last_checked[channel_id] = time.monotonic()
+        threading.Thread(target=self._check_channel_now, args=(dict(new_channel),), daemon=True).start()
+
+    def _refresh_list(self) -> None:
+        for child in self.list_frame.winfo_children(): child.destroy()
+        enabled_count = sum(bool(channel.get("enabled")) for channel in self.channels)
+        self.count_label.configure(text=f"등록 채널 {len(self.channels)}개 · 감지 중 {enabled_count}개")
+        if not self.channels: tk.Label(self.list_frame, text="아직 등록된 채널이 없습니다.", fg=self.MUTED, bg=self.SURFACE, font=("Malgun Gothic", 10), pady=28).pack()
+        for channel in self.channels:
+            self._make_channel_row(channel)
+            if self.editing_channel_id == channel["id"]: self._make_interval_editor(channel)
+        self._set_status("감지할 채널을 등록하세요." if not enabled_count else f"{enabled_count}개 채널의 방송 시작을 기다리는 중")
+
+    def _make_channel_row(self, channel: dict) -> None:
+        row = tk.Frame(self.list_frame, bg=self.INPUT, padx=12, pady=9); row.pack(fill="x", pady=4)
+        details = tk.Frame(row, bg=self.INPUT); details.pack(side="left", fill="x", expand=True)
+        tk.Label(details, text=channel.get("name") or channel["id"], fg=self.TEXT, bg=self.INPUT, font=("Malgun Gothic", 10, "bold"), anchor="w").pack(fill="x")
+        live_state = self.live_info.get(channel["id"])
+        if live_state is None:
+            live_text, live_color = "방송 상태 확인 중…", self.MUTED
+        elif live_state[0]:
+            live_text, live_color = f"방송 중 · {live_state[1]}", self.ACCENT
+        else:
+            live_text, live_color = "현재 방송 중이 아닙니다.", self.MUTED
+        tk.Label(details, text=live_text, fg=live_color, bg=self.INPUT, font=("Malgun Gothic", 8), anchor="w").pack(fill="x", pady=(2, 0))
+        active = bool(channel.get("enabled")); label = "감지 ON" if active else "감지 OFF"
+        tk.Button(row, text=label, command=lambda value=channel["id"]: self.toggle_channel(value), relief="flat", bd=0, cursor="hand2", padx=9, pady=5, font=("Malgun Gothic", 8, "bold"), bg=self.ACCENT if active else "#454954", fg="#08251D" if active else self.TEXT, activebackground="#38EDBB" if active else "#5A5F6B").pack(side="right", padx=(7, 0))
+        ttk.Button(row, text="삭제", style="Small.TButton", command=lambda value=channel["id"]: self.remove_channel(value)).pack(side="right")
+        tk.Label(row, text=f"{channel.get('interval', 60)}초", fg=self.MUTED, bg=self.INPUT, font=("Consolas", 9)).pack(side="right", padx=(0, 5))
+        ttk.Button(row, text="간격 수정", style="Small.TButton", command=lambda value=channel["id"]: self.show_interval_editor(value)).pack(side="right", padx=(0, 8))
+
+    def _make_interval_editor(self, channel: dict) -> None:
+        editor = tk.Frame(self.list_frame, bg="#373B45", padx=13, pady=10)
+        editor.pack(fill="x", padx=7, pady=(0, 7))
+        tk.Label(editor, text="확인 간격", fg=self.TEXT, bg="#373B45", font=("Malgun Gothic", 9, "bold")).pack(side="left")
+        tk.Label(editor, text="최소 15초", fg=self.MUTED, bg="#373B45", font=("Malgun Gothic", 8)).pack(side="left", padx=(7, 10))
+        interval_value = tk.StringVar(value=str(channel.get("interval", 60)))
+        interval_entry = tk.Entry(editor, textvariable=interval_value, width=5, bg=self.INPUT, fg=self.TEXT, insertbackground=self.TEXT, relief="flat", justify="center", font=("Consolas", 10))
+        interval_entry.pack(side="left", ipady=6)
+        tk.Label(editor, text="초", fg=self.MUTED, bg="#373B45", font=("Malgun Gothic", 9)).pack(side="left", padx=5)
+        ttk.Button(editor, text="설정 저장", style="Accent.TButton", command=lambda value=channel["id"], field=interval_value: self.update_interval(value, field.get())).pack(side="right")
+        interval_entry.focus_set()
+        interval_entry.select_range(0, "end")
+
+    def show_interval_editor(self, channel_id: str) -> None:
+        self.editing_channel_id = None if self.editing_channel_id == channel_id else channel_id
+        self._refresh_list()
+
+    def toggle_channel(self, channel_id: str) -> None:
+        for channel in self.channels:
+            if channel["id"] == channel_id:
+                channel["enabled"] = not bool(channel.get("enabled")); self.was_live.pop(channel_id, None); break
+        self._save_channels(); self._refresh_list()
+
+    def remove_channel(self, channel_id: str) -> None:
+        self.channels = [channel for channel in self.channels if channel["id"] != channel_id]; self.was_live.pop(channel_id, None); self.editing_channel_id = None; self._save_channels(); self._refresh_list()
+
+    def update_interval(self, channel_id: str, value: str) -> None:
+        try: interval = max(15, int(value))
+        except ValueError:
+            messagebox.showerror(APP_NAME, "확인 간격은 15 이상의 숫자로 입력해 주세요."); return
+        channel_name = channel_id
+        for channel in self.channels:
+            if channel["id"] == channel_id:
+                channel["interval"] = interval; channel_name = channel.get("name") or channel_id; break
+        self._save_channels(); self.last_checked.pop(channel_id, None); self.editing_channel_id = None; self._refresh_list()
+        self._set_status(f"{channel_name} 확인 간격을 {interval}초로 적용했습니다.")
+
+    def _monitor(self) -> None:
+        while not self.stop_event.is_set():
+            for channel in [dict(item) for item in self.channels if item.get("enabled")]:
+                if self.stop_event.is_set(): break
+                channel_id = channel["id"]
+                if time.monotonic() - self.last_checked.get(channel_id, float("-inf")) < channel.get("interval", 60): continue
+                self.last_checked[channel_id] = time.monotonic()
+                try:
+                    self._process_live_status(channel)
+                except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError, TimeoutError): self._ui(self._set_status, f"{channel.get('name', channel['id'])} 확인 실패 · 다음 주기에 재시도합니다.", True)
+            self.stop_event.wait(1)
+
+    def _check_channel_now(self, channel: dict) -> None:
+        """Check a just-added channel immediately instead of waiting for the next cycle."""
+        try:
+            self._process_live_status(channel, added=True)
+        except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError, TimeoutError):
+            self._ui(self._set_status, f"{channel.get('name', channel['id'])} 등록 완료 · 상태 확인은 다음 주기에 재시도합니다.", True)
+
+    def _check_saved_channels_on_start(self) -> None:
+        """Show the current live state for every saved channel when the app opens."""
+        saved_channels = [dict(channel) for channel in self.channels]
+        if saved_channels:
+            self._ui(self._set_status, f"저장된 채널 {len(saved_channels)}개의 방송 상태를 확인 중…")
+        for channel in saved_channels:
+            if self.stop_event.is_set(): return
+            try:
+                self._process_live_status(channel)
+            except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError, TimeoutError):
+                self._ui(self._set_status, f"{channel.get('name', channel['id'])} 초기 확인 실패 · 다음 주기에 재시도합니다.", True)
+
+    def _process_live_status(self, channel: dict, added: bool = False) -> None:
+        is_live, title = get_live_status(channel["id"])
+        self._ui(self._record_live_status, channel["id"], is_live, title)
+        if is_live and not self.was_live.get(channel["id"], False): self.was_live[channel["id"]] = True; self._ui(self._open_live, channel, title)
+        elif not is_live:
+            self.was_live[channel["id"]] = False
+            if added: self._ui(self._set_status, f"{channel.get('name', channel['id'])} 등록 완료 · 현재 오프라인")
+
+    def _record_live_status(self, channel_id: str, is_live: bool, title: str) -> None:
+        self.live_info[channel_id] = (is_live, title)
+        self._refresh_list()
+
+    def _open_live(self, channel: dict, title: str) -> None:
+        if not any(item["id"] == channel["id"] and item.get("enabled") for item in self.channels): return
+        remaining = self.allow_browser_open_after - time.monotonic()
+        if remaining > 0:
+            self._set_status("Chrome 방송 탭 상태를 확인하는 중입니다…")
+            self.root.after(int(remaining * 1000) + 50, lambda: self._open_live(channel, title))
+            return
+        if CHROME_TABS.is_watched(channel["id"]):
+            self._set_status(f"{channel.get('name', channel['id'])} 방송은 Chrome에서 이미 시청 중입니다.")
+            return
+        self._set_status(f"방송 시작 감지: {channel.get('name', channel['id'])} · {title}"); self.root.bell(); webbrowser.open(LIVE_URL.format(channel_id=channel["id"]), new=2)
+
+    def _set_status(self, message: str, is_error: bool = False) -> None:
+        self.status_value.set(message); self.status_dot.configure(fg=self.DANGER if is_error else self.ACCENT)
+
+    def _ui(self, callback, *args) -> None: self.root.after(0, callback, *args)
+
+    def _create_tray_icon(self):
+        if pystray is None: return None
+        image = Image.new("RGBA", (64, 64), self.BG); draw = ImageDraw.Draw(image); draw.ellipse((8, 8, 56, 56), fill=self.ACCENT); draw.polygon(((27, 22), (27, 42), (44, 32)), fill=self.BG)
+        return pystray.Icon("AutoChzzk", image, APP_NAME, menu=pystray.Menu(pystray.MenuItem("창 열기", self.show_window, default=True), pystray.MenuItem("종료", self.quit_from_tray)))
+
+    def hide_to_tray(self) -> None:
+        if pystray is None: messagebox.showwarning(APP_NAME, "트레이 기능에 필요한 패키지가 없습니다. `python -m pip install -r requirements.txt`를 실행해 주세요."); return
+        self.root.withdraw()
+        if self.tray_icon is None: self.tray_icon = self._create_tray_icon(); threading.Thread(target=self.tray_icon.run, daemon=True).start()
+
+    def show_window(self, _icon=None, _item=None) -> None: self.root.after(0, self._restore_window)
+    def _restore_window(self) -> None: self.root.deiconify(); self.root.lift(); self.root.focus_force()
+    def quit_from_tray(self, _icon=None, _item=None) -> None: self.root.after(0, self.on_close)
+    def on_close(self) -> None:
+        global APP_INSTANCE
+        self.stop_event.set()
+        if self.extension_server is not None: self.extension_server.shutdown(); self.extension_server.server_close()
+        if self.tray_icon is not None: self.tray_icon.stop()
+        APP_INSTANCE = None
+        self.root.destroy()
+
+
+if __name__ == "__main__":
+    # Keep one monitoring process only. A second launch quietly exits.
+    mutex = None
+    if sys.platform == "win32":
+        import ctypes
+        mutex = ctypes.windll.kernel32.CreateMutexW(None, False, MUTEX_NAME)
+        if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+            request = urllib.request.Request(f"http://127.0.0.1:{EXTENSION_PORT}/show-window", data=b"{}", method="POST")
+            try:
+                urllib.request.urlopen(request, timeout=1).close()
+            except urllib.error.URLError:
+                pass
+            sys.exit(0)
+    root = tk.Tk(); AutoChzzkApp(root); root.mainloop()
