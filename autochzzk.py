@@ -17,13 +17,14 @@ from tkinter import messagebox, ttk
 
 try:
     import pystray
-    from PIL import Image, ImageDraw
+    from PIL import Image, ImageDraw, ImageTk
 except ImportError:
     pystray = None
 
 APP_NAME = "AutoChzzk"
 MUTEX_NAME = "Local\\AutoChzzk_SingleInstance_1"
 DATA_PATH = Path(__file__).with_name("channels.json")
+LOGO_PATH = Path(__file__).parent / "assets" / "logo" / "app-icon.png"
 LIVE_API_URL = "https://api.chzzk.naver.com/polling/v3.1/channels/{channel_id}/live-status"
 CHANNEL_API_URL = "https://api.chzzk.naver.com/service/v1/channels/{channel_id}"
 LIVE_URL = "https://chzzk.naver.com/live/{channel_id}"
@@ -174,6 +175,9 @@ class AutoChzzkApp:
         self.stop_event = threading.Event()
         self.tray_icon = None
         self.extension_server = start_extension_server()
+        self.window_icon = None
+        self.header_icon = None
+        self._load_brand_icons()
         # Chrome extensions can be asleep while the desktop app starts. Wait
         # for one periodic tab report before opening any startup-detected live.
         self.allow_browser_open_after = time.monotonic() + EXTENSION_INITIAL_SYNC_SECONDS
@@ -186,6 +190,18 @@ class AutoChzzkApp:
         threading.Thread(target=self._monitor, daemon=True).start()
         threading.Thread(target=self._check_saved_channels_on_start, daemon=True).start()
 
+    def _load_brand_icons(self) -> None:
+        if not LOGO_PATH.is_file(): return
+        try:
+            self.window_icon = tk.PhotoImage(file=LOGO_PATH)
+            self.root.iconphoto(True, self.window_icon)
+            header_image = Image.open(LOGO_PATH).convert("RGBA")
+            header_image.thumbnail((34, 34), Image.Resampling.LANCZOS)
+            self.header_icon = ImageTk.PhotoImage(header_image)
+        except (tk.TclError, OSError):
+            self.window_icon = None
+            self.header_icon = None
+
     def _configure_styles(self) -> None:
         style = ttk.Style(); style.theme_use("clam")
         style.configure("Accent.TButton", background=self.ACCENT, foreground="#08251D", borderwidth=0, font=("Malgun Gothic", 10, "bold"), padding=(13, 9))
@@ -197,7 +213,10 @@ class AutoChzzkApp:
 
     def _build_ui(self) -> None:
         outer = tk.Frame(self.root, bg=self.BG, padx=30, pady=24); outer.pack(fill="both", expand=True)
-        tk.Label(outer, text="●", fg=self.ACCENT, bg=self.BG, font=("Segoe UI", 22, "bold")).pack(side="left")
+        if self.header_icon is not None:
+            tk.Label(outer, image=self.header_icon, bg=self.BG).pack(side="left")
+        else:
+            tk.Label(outer, text="●", fg=self.ACCENT, bg=self.BG, font=("Segoe UI", 22, "bold")).pack(side="left")
         heading = tk.Frame(outer, bg=self.BG); heading.pack(fill="x", padx=(8, 0))
         ttk.Button(heading, text="종료", style="Dark.TButton", command=self.on_close).pack(side="right", padx=(0, 0), pady=(4, 0))
         tk.Label(heading, text=APP_NAME, fg=self.TEXT, bg=self.BG, font=("Malgun Gothic", 18, "bold")).pack(anchor="w")
@@ -392,7 +411,11 @@ class AutoChzzkApp:
 
     def _create_tray_icon(self):
         if pystray is None: return None
-        image = Image.new("RGBA", (64, 64), self.BG); draw = ImageDraw.Draw(image); draw.ellipse((8, 8, 56, 56), fill=self.ACCENT); draw.polygon(((27, 22), (27, 42), (44, 32)), fill=self.BG)
+        if LOGO_PATH.is_file():
+            image = Image.open(LOGO_PATH).convert("RGBA")
+            image.thumbnail((64, 64), Image.Resampling.LANCZOS)
+        else:
+            image = Image.new("RGBA", (64, 64), self.BG); draw = ImageDraw.Draw(image); draw.ellipse((8, 8, 56, 56), fill=self.ACCENT); draw.polygon(((27, 22), (27, 42), (44, 32)), fill=self.BG)
         return pystray.Icon("AutoChzzk", image, APP_NAME, menu=pystray.Menu(pystray.MenuItem("창 열기", self.show_window, default=True), pystray.MenuItem("종료", self.quit_from_tray)))
 
     def hide_to_tray(self) -> None:
