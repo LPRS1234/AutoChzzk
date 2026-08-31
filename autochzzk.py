@@ -375,7 +375,9 @@ class AutoChzzkApp:
         tk.Label(controls, text="채널별 확인 간격은 목록에서 수정할 수 있습니다 · 최소 15초", fg=self.MUTED, bg=self.BG, font=("Malgun Gothic", 9)).pack(side="right")
         status = tk.Frame(outer, bg="#1D2C29", padx=13, pady=9)
         status.pack(fill="x", pady=(13, 0), side="bottom")
-        self.status_dot = tk.Label(status, text="●", fg=self.ACCENT, bg="#1D2C29", font=("Segoe UI", 10)); self.status_dot.pack(side="left", padx=(0, 7))
+        self.status_dot = tk.Canvas(status, width=10, height=10, bg="#1D2C29", highlightthickness=0)
+        self.status_dot_item = self.status_dot.create_oval(3, 3, 7, 7, fill=self.ACCENT, outline="")
+        self.status_dot.pack(side="left", padx=(0, 7))
         tk.Label(status, textvariable=self.status_value, fg=self.TEXT, bg="#1D2C29", font=("Malgun Gothic", 9), anchor="w").pack(side="left", fill="x", expand=True)
         list_box = tk.Frame(outer, bg=self.SURFACE); list_box.pack(fill="both", expand=True)
         self.canvas = tk.Canvas(list_box, bg=self.SURFACE, highlightthickness=0)
@@ -612,7 +614,7 @@ class AutoChzzkApp:
         if watching_count:
             self._set_status(f"{watching_count}개의 방송을 시청 중")
         elif live_count:
-            self._set_status(f"{live_count}개의 방송이 송출 중")
+            self._set_status(f"{live_count}개의 방송을 적용 프로필과 다른 프로필에서 시청 중입니다.", True)
         else:
             self._set_status("현재 방송 중인 등록 채널이 없습니다.")
 
@@ -745,7 +747,8 @@ class AutoChzzkApp:
         self._set_status(f"{channel.get('name', channel['id'])} 방송 감지 · Chrome 확장 프로그램이 탭 열기를 확인하지 못해 자동으로 열지 않았습니다.", True)
 
     def _set_status(self, message: str, is_error: bool = False) -> None:
-        self.status_value.set(message); self.status_dot.configure(fg=self.DANGER if is_error else self.ACCENT)
+        self.status_value.set(message)
+        self.status_dot.itemconfigure(self.status_dot_item, fill=self.DANGER if is_error else self.ACCENT)
 
     def _ui(self, callback, *args) -> None: self.root.after(0, callback, *args)
 
