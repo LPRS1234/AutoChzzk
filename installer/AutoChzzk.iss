@@ -12,7 +12,7 @@ DefaultDirName={autopf}\{#MyAppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=admin
 OutputDir=..\release
-OutputBaseFilename=AutoChzzk-Setup
+OutputBaseFilename=AutoChzzk-Setup-{#MyAppVersion}
 SetupIconFile=..\assets\logo\app-icon.ico
 Compression=lzma2
 SolidCompression=yes
@@ -31,6 +31,17 @@ Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 [Icons]
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
+
+[Code]
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ResultCode: Integer;
+begin
+  { Close the running tray instance so its executable can be replaced. }
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM "{#MyAppExeName}"', '', SW_HIDE,
+    ewWaitUntilTerminated, ResultCode);
+  Result := '';
+end;
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "AutoChzzk 실행"; Flags: nowait postinstall skipifsilent
