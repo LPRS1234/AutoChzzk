@@ -268,8 +268,8 @@ class AutoChzzkApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         root.title(APP_NAME)
-        root.geometry("620x630")
-        root.minsize(540, 520)
+        root.geometry("620x650")
+        root.minsize(540, 540)
         root.configure(bg=self.BG)
         self.input_value, self.status_value = tk.StringVar(), tk.StringVar()
         self.extension_status_value = tk.StringVar(value="Chrome 확장 프로그램 연결 확인 중…")
@@ -351,6 +351,8 @@ class AutoChzzkApp:
         self.extension_status_dot = tk.Label(extension_row, text="●", fg=self.MUTED, bg=self.BG, font=("Segoe UI", 8))
         self.extension_status_dot.pack(side="left", padx=(0, 5))
         tk.Label(extension_row, textvariable=self.extension_status_value, fg=self.MUTED, bg=self.BG, font=("Malgun Gothic", 8), anchor="w").pack(side="left")
+        ttk.Button(extension_row, text="설치 안내", style="Small.TButton", command=self.show_extension_install_guide, cursor="hand2").pack(side="right")
+        tk.Label(outer, text="자동 접속을 사용하려면 선택한 Chrome 프로필에 확장 프로그램을 설치해야 합니다.", fg=self.MUTED, bg=self.BG, font=("Malgun Gothic", 8), anchor="w").pack(fill="x", pady=(2, 0))
         self.profile_editor = tk.Frame(outer, bg=self.SURFACE, padx=14, pady=10)
         tk.Label(self.profile_editor, text="변경할 Chrome 프로필", fg=self.TEXT, bg=self.SURFACE, font=("Malgun Gothic", 9, "bold")).pack(side="left")
         self.profile_selector = ttk.Combobox(self.profile_editor, textvariable=self.profile_value, values=list(self.profile_labels), state="readonly", width=20, font=("Malgun Gothic", 9))
@@ -533,61 +535,15 @@ class AutoChzzkApp:
             )
         else:
             webbrowser.open("chrome://extensions", new=1)
-        self.root.after(800, self._ask_extension_installed)
 
-    def _ask_extension_installed(self) -> None:
+    def show_extension_install_guide(self) -> None:
         self._show_app_dialog(
-            "Chrome 확장 프로그램 확인",
-            "Chrome 확장 프로그램을 설치하셨습니까?\n\n설치 또는 새로고침을 마쳤다면 ‘설치했습니다’를 눌러 연결을 다시 확인해 주세요.",
-            "설치했습니다",
-            self._retry_extension_connection,
-            "아직 설치 전",
-            self._retry_extension_install_prompt,
+            "Chrome 확장 프로그램 설치 안내",
+            f"선택한 Chrome 프로필({self.selected_chrome_profile['name']})에만 설치하면 됩니다.\n\n1. Chrome 열기를 누릅니다.\n2. 개발자 모드를 켭니다.\n3. ‘압축해제된 확장 프로그램 로드’를 눌러 AutoChzzk 설치 폴더의 chrome_extension 폴더를 선택합니다.\n\n이미 다른 프로필에 설치했다면 ‘프로필 변경’에서 그 프로필로 바꿔 주세요.",
+            "Chrome 열기",
+            self._open_chrome_extensions,
+            "확인했습니다",
         )
-
-    def _retry_extension_connection(self) -> None:
-        self.extension_setup_prompted = False
-        self._set_status("Chrome 확장 프로그램 연결을 다시 확인하는 중입니다…")
-        self._set_extension_status("Chrome 확장 프로그램 연결을 다시 확인하는 중…")
-        self.root.after(1_000, self._finish_extension_reconnect)
-
-    def _retry_extension_install_prompt(self) -> None:
-        if self.stop_event.is_set():
-            return
-        self._set_extension_status("Chrome 확장 프로그램 연결을 다시 확인하는 중…")
-        self.root.after(1_000, self._finish_extension_install_prompt)
-
-    def _finish_extension_install_prompt(self) -> None:
-        if self.stop_event.is_set():
-            return
-        if CHROME_TABS.is_connected():
-            self.extension_setup_prompted = True
-            self._set_status("Chrome 확장 프로그램이 연결되었습니다.")
-            self._set_extension_status("Chrome 확장 프로그램 연결됨", True)
-            threading.Thread(target=self._open_current_lives_after_extension_connect, daemon=True).start()
-            return
-        self._set_extension_status("Chrome 확장 프로그램 연결 안 됨", False)
-        self._ask_extension_installed()
-
-    def _retry_extension_connection_after_later(self) -> None:
-        if self.stop_event.is_set():
-            return
-        self.extension_setup_prompted = False
-        self._set_extension_status("Chrome 확장 프로그램 연결을 다시 확인하는 중…")
-        self.root.after(1_000, self._check_extension_connection)
-
-    def _finish_extension_reconnect(self) -> None:
-        if self.stop_event.is_set():
-            return
-        if CHROME_TABS.is_connected():
-            self.extension_setup_prompted = True
-            self._set_status("Chrome 확장 프로그램이 연결되었습니다.")
-            self._set_extension_status("Chrome 확장 프로그램 연결됨", True)
-            threading.Thread(target=self._open_current_lives_after_extension_connect, daemon=True).start()
-            return
-        self.extension_setup_prompted = True
-        self._set_status("Chrome 확장 프로그램이 아직 연결되지 않았습니다.", True)
-        self._set_extension_status("Chrome 확장 프로그램 연결 안 됨", False)
 
     def _check_extension_connection(self) -> None:
         if self.stop_event.is_set():
@@ -602,14 +558,7 @@ class AutoChzzkApp:
             return
         self._set_extension_status("Chrome 확장 프로그램 연결 안 됨", False)
         self.extension_setup_prompted = True
-        self._show_app_dialog(
-            "Chrome 확장 프로그램 연결 필요",
-            f"선택한 Chrome 프로필({self.selected_chrome_profile['name']})에서 AutoChzzk 확장 프로그램을 찾지 못했습니다.\n\n‘Chrome 확장 프로그램 열기’에서 개발자 모드를 켠 뒤, ‘압축해제된 확장 프로그램 로드’를 눌러 AutoChzzk 폴더의 chrome_extension 폴더를 선택해 주세요. 선택하지 않은 Chrome 프로필에는 설치할 필요가 없습니다.",
-            "Chrome 열기",
-            self._open_chrome_extensions,
-            "나중에",
-            self._retry_extension_connection_after_later,
-        )
+        self.show_extension_install_guide()
 
     def _open_current_lives_after_extension_connect(self) -> None:
         """Open broadcasts that were already live while the extension was disconnected."""
