@@ -49,6 +49,27 @@ URL_ID_PATTERN = re.compile(r"chzzk\.naver\.com/(?:live/)?([0-9a-f]{32})(?:[/?#]
 APP_INSTANCE = None
 
 
+def enable_windows_dpi_awareness() -> None:
+    """Render Tk widgets at the display's native DPI instead of bitmap scaling."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        # This must run before the first window is created. Per-monitor V2
+        # keeps the app sharp when it moves between displays with different
+        # Windows scaling settings.
+        if ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):
+            return
+
+        # Fallback for older Windows versions without the V2 API.
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except (AttributeError, OSError):
+        # DPI awareness is optional; unsupported Windows environments should
+        # still be able to run the application.
+        return
+
+
 def extract_channel_id(value: str) -> str | None:
     value = value.strip()
     if CHANNEL_ID_PATTERN.fullmatch(value):
@@ -850,6 +871,7 @@ if __name__ == "__main__":
     mutex = None
     if sys.platform == "win32":
         import ctypes
+        enable_windows_dpi_awareness()
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("LPRS1234.AutoChzzk")
         mutex = ctypes.windll.kernel32.CreateMutexW(None, False, MUTEX_NAME)
         if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
