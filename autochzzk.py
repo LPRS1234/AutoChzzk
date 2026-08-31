@@ -526,6 +526,8 @@ class AutoChzzkApp:
             return
         self.profile_value.set(self.selected_chrome_profile["name"])
         self.profile_editor.pack(fill="x", pady=(8, 0), before=self.add_card)
+        self.profile_selector.selection_clear()
+        self.root.after_idle(self.root.focus_set)
 
     def select_chrome_profile(self) -> None:
         profile = self.profile_labels.get(self.profile_value.get())
