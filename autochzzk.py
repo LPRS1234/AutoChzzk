@@ -539,7 +539,7 @@ class AutoChzzkApp:
     def show_extension_install_guide(self) -> None:
         self._show_app_dialog(
             "Chrome 확장 프로그램 설치 안내",
-            f"선택한 Chrome 프로필({self.selected_chrome_profile['name']})에만 설치하면 됩니다.\n\n1. Chrome 열기를 누릅니다.\n2. 개발자 모드를 켭니다.\n3. ‘압축해제된 확장 프로그램 로드’를 눌러 AutoChzzk 설치 폴더의 chrome_extension 폴더를 선택합니다.\n\n이미 다른 프로필에 설치했다면 ‘프로필 변경’에서 그 프로필로 바꿔 주세요.",
+            f"선택한 Chrome 프로필({self.selected_chrome_profile['name']})에만 설치하면 됩니다.\n\n1. Chrome 열기를 누릅니다. Chrome 새 탭만 열리면 주소창에 chrome://extensions 를 입력해 접속합니다.\n2. 화면 우측 상단의 ‘개발자 모드’를 켭니다.\n3. ‘압축해제된 확장 프로그램 로드’를 눌러 AutoChzzk 설치 폴더의 chrome_extension 폴더를 선택합니다.\n\n이미 다른 프로필에 설치했다면 ‘프로필 변경’에서 그 프로필로 바꿔 주세요.",
             "Chrome 열기",
             self._open_chrome_extensions,
             "확인했습니다",
