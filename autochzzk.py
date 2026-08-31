@@ -372,6 +372,7 @@ class AutoChzzkApp:
         tk.Label(self.profile_editor, text="변경할 Chrome 프로필", fg=self.TEXT, bg=self.SURFACE, font=("Malgun Gothic", 9, "bold")).pack(side="left")
         self.profile_selector = ttk.Combobox(self.profile_editor, textvariable=self.profile_value, values=list(self.profile_labels), state="readonly", width=20, font=("Malgun Gothic", 9), style="Dark.TCombobox")
         self.profile_selector.pack(side="left", padx=(10, 8))
+        self.profile_selector.bind("<<ComboboxSelected>>", lambda _event: self.root.after_idle(self._clear_profile_selector_highlight))
         ttk.Button(self.profile_editor, text="프로필 적용", style="Accent.TButton", command=self.select_chrome_profile, cursor="hand2").pack(side="right")
         self.add_card = tk.Frame(outer, bg=self.SURFACE, padx=17, pady=15); self.add_card.pack(fill="x", pady=(20, 14))
         add_card = self.add_card
@@ -526,8 +527,12 @@ class AutoChzzkApp:
             return
         self.profile_value.set(self.selected_chrome_profile["name"])
         self.profile_editor.pack(fill="x", pady=(8, 0), before=self.add_card)
+        self._clear_profile_selector_highlight()
+        self.root.after_idle(self._clear_profile_selector_highlight)
+
+    def _clear_profile_selector_highlight(self) -> None:
         self.profile_selector.selection_clear()
-        self.root.after_idle(self.root.focus_set)
+        self.root.focus_set()
 
     def select_chrome_profile(self) -> None:
         profile = self.profile_labels.get(self.profile_value.get())
