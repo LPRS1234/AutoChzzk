@@ -458,6 +458,7 @@ class AutoChzzkApp:
             self._set_extension_status("Chrome 확장 프로그램 연결됨", True)
         else:
             self._set_extension_status("Chrome 확장 프로그램 연결 안 됨", False)
+        self._update_monitor_status()
         self.root.after(2_000, self._refresh_extension_status)
 
     def show_profile_editor(self) -> None:
@@ -595,16 +596,23 @@ class AutoChzzkApp:
     def _refresh_list(self) -> None:
         for child in self.list_frame.winfo_children(): child.destroy()
         enabled_count = sum(bool(channel.get("enabled")) for channel in self.channels)
-        watching_count = sum(bool(self.live_info.get(channel["id"], (False, ""))[0]) for channel in self.channels)
         self.count_label.configure(text=f"등록 채널 {len(self.channels)}개 · 감지 중 {enabled_count}개")
         if not self.channels: tk.Label(self.list_frame, text="아직 등록된 채널이 없습니다.", fg=self.MUTED, bg=self.SURFACE, font=("Malgun Gothic", 10), pady=28).pack()
         for channel in self.channels:
             self._make_channel_row(channel)
             if self.editing_channel_id == channel["id"]: self._make_interval_editor(channel)
+        self._update_monitor_status()
+
+    def _update_monitor_status(self) -> None:
         if not self.channels:
             self._set_status("감지할 채널을 등록하세요.")
-        elif watching_count:
+            return
+        watching_count = sum(CHROME_TABS.is_watched(channel["id"]) for channel in self.channels)
+        live_count = sum(bool(self.live_info.get(channel["id"], (False, ""))[0]) for channel in self.channels)
+        if watching_count:
             self._set_status(f"{watching_count}개의 방송을 시청 중")
+        elif live_count:
+            self._set_status(f"{live_count}개의 방송이 송출 중")
         else:
             self._set_status("현재 방송 중인 등록 채널이 없습니다.")
 
