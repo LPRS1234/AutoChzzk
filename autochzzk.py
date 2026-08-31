@@ -351,7 +351,7 @@ class AutoChzzkApp:
         tk.Label(heading, text="저장한 채널의 방송 시작을 자동 감지합니다", fg=self.MUTED, bg=self.BG, font=("Malgun Gothic", 9)).pack(anchor="w")
         profile_row = tk.Frame(outer, bg=self.BG)
         profile_row.pack(fill="x", pady=(13, 0))
-        tk.Label(profile_row, text="사용할 Chrome 프로필", fg=self.TEXT, bg=self.BG, font=("Malgun Gothic", 9, "bold")).pack(side="left")
+        tk.Label(profile_row, text="사용 중인 Chrome 프로필", fg=self.TEXT, bg=self.BG, font=("Malgun Gothic", 9, "bold")).pack(side="left")
         self.profile_change_button = ttk.Button(profile_row, text="프로필 변경", style="Small.TButton", command=self.show_profile_editor, cursor="hand2")
         if len(self.chrome_profiles) > 1:
             self.profile_change_button.pack(side="right")
