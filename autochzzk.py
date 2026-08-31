@@ -25,7 +25,7 @@ except ImportError:
     pystray = None
 
 APP_NAME = "AutoChzzk"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 UPDATE_API_URL = "https://api.github.com/repos/LPRS1234/AutoChzzk/releases/latest"
 MUTEX_NAME = "Local\\AutoChzzk_SingleInstance_1"
 if getattr(sys, "frozen", False):
