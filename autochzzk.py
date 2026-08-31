@@ -274,10 +274,7 @@ class AutoChzzkApp:
         self.input_value, self.status_value = tk.StringVar(), tk.StringVar()
         self.extension_status_value = tk.StringVar(value="Chrome 확장 프로그램 연결 확인 중…")
         self.settings = self._load_settings()
-        self.chrome_profiles = get_chrome_profiles()
-        self.profile_labels = {profile["name"]: profile for profile in self.chrome_profiles}
-        saved_profile_directory = self.settings.get("chrome_profile_directory")
-        self.selected_chrome_profile = next((profile for profile in self.chrome_profiles if profile["directory"] == saved_profile_directory), self.chrome_profiles[0])
+        self._scan_chrome_profiles()
         self.profile_value = tk.StringVar(value=self.selected_chrome_profile["name"])
         self._apply_selected_profile()
         self.channels = self._load_channels()
@@ -355,7 +352,9 @@ class AutoChzzkApp:
         profile_row = tk.Frame(outer, bg=self.BG)
         profile_row.pack(fill="x", pady=(13, 0))
         tk.Label(profile_row, text="사용할 Chrome 프로필", fg=self.TEXT, bg=self.BG, font=("Malgun Gothic", 9, "bold")).pack(side="left")
-        ttk.Button(profile_row, text="프로필 변경", style="Small.TButton", command=self.show_profile_editor, cursor="hand2").pack(side="right")
+        self.profile_change_button = ttk.Button(profile_row, text="프로필 변경", style="Small.TButton", command=self.show_profile_editor, cursor="hand2")
+        if len(self.chrome_profiles) > 1:
+            self.profile_change_button.pack(side="right")
         self.current_profile_label = tk.Label(profile_row, text=self.profile_value.get(), fg=self.ACCENT, bg=self.BG, font=("Malgun Gothic", 9, "bold"))
         self.current_profile_label.pack(side="right", padx=(0, 9))
         extension_row = tk.Frame(outer, bg=self.BG)
@@ -415,6 +414,13 @@ class AutoChzzkApp:
         except (FileNotFoundError, json.JSONDecodeError):
             return {}
 
+    def _scan_chrome_profiles(self) -> None:
+        """Read Chrome's profile list on every app launch."""
+        self.chrome_profiles = get_chrome_profiles()
+        self.profile_labels = {profile["name"]: profile for profile in self.chrome_profiles}
+        saved_profile_directory = self.settings.get("chrome_profile_directory")
+        self.selected_chrome_profile = next((profile for profile in self.chrome_profiles if profile["directory"] == saved_profile_directory), self.chrome_profiles[0])
+
     def _save_settings(self) -> None:
         SETTINGS_PATH.write_text(json.dumps(self.settings, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -472,6 +478,8 @@ class AutoChzzkApp:
         self.root.after(2_000, self._refresh_extension_status)
 
     def show_profile_editor(self) -> None:
+        if len(self.chrome_profiles) < 2:
+            return
         if self.profile_editor.winfo_ismapped():
             self.profile_editor.pack_forget()
             return
