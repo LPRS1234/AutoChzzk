@@ -472,6 +472,9 @@ class AutoChzzkApp:
         self.root.after(2_000, self._refresh_extension_status)
 
     def show_profile_editor(self) -> None:
+        if self.profile_editor.winfo_ismapped():
+            self.profile_editor.pack_forget()
+            return
         self.profile_value.set(self.selected_chrome_profile["name"])
         self.profile_editor.pack(fill="x", pady=(8, 0), before=self.add_card)
 
