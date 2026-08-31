@@ -306,7 +306,7 @@ class AutoChzzkApp:
         APP_INSTANCE = self
         self._refresh_list()
         root.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
-        root.after((EXTENSION_INITIAL_SYNC_SECONDS + 3) * 1000, self._check_extension_connection)
+        root.after(500, self._check_extension_connection)
         root.after(1_000, self._refresh_extension_status)
         threading.Thread(target=self._monitor, daemon=True).start()
         threading.Thread(target=self._check_saved_channels_on_start, daemon=True).start()
@@ -333,6 +333,10 @@ class AutoChzzkApp:
         style.map("Dark.TButton", background=[("active", "#50545F")])
         style.configure("Small.TButton", background="#3A3D47", foreground=self.TEXT, borderwidth=0, font=("Malgun Gothic", 8, "bold"), padding=(5, 5))
         style.map("Small.TButton", background=[("active", "#50545F")])
+        style.configure("DialogAccent.TButton", background=self.ACCENT, foreground="#08251D", borderwidth=0, font=("Malgun Gothic", 9, "bold"), padding=(10, 7))
+        style.map("DialogAccent.TButton", background=[("active", "#38EDBB")])
+        style.configure("DialogDark.TButton", background="#3A3D47", foreground=self.TEXT, borderwidth=0, font=("Malgun Gothic", 9, "bold"), padding=(10, 7))
+        style.map("DialogDark.TButton", background=[("active", "#50545F")])
 
     def _build_ui(self) -> None:
         outer = tk.Frame(self.root, bg=self.BG, padx=30, pady=24); outer.pack(fill="both", expand=True)
@@ -510,8 +514,8 @@ class AutoChzzkApp:
                 callback()
 
         if cancel_text:
-            ttk.Button(buttons, text=cancel_text, style="Dark.TButton", command=lambda: close(cancel_command), cursor="hand2", width=12).pack(side="right")
-        ttk.Button(buttons, text=confirm_text, style="Accent.TButton", command=lambda: close(confirm_command), cursor="hand2", width=12).pack(side="right", padx=(0, 8) if cancel_text else 0)
+            ttk.Button(buttons, text=cancel_text, style="DialogDark.TButton", command=lambda: close(cancel_command), cursor="hand2", width=12).pack(side="right")
+        ttk.Button(buttons, text=confirm_text, style="DialogAccent.TButton", command=lambda: close(confirm_command), cursor="hand2", width=12).pack(side="right", padx=(0, 8) if cancel_text else 0)
         dialog.protocol("WM_DELETE_WINDOW", close)
         dialog.update_idletasks()
         root_x, root_y = self.root.winfo_rootx(), self.root.winfo_rooty()
