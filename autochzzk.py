@@ -433,26 +433,33 @@ class AutoChzzkApp:
             return
         current_directory = self.selected_chrome_profile["directory"]
         available_profiles = get_chrome_profiles()
-        if not any(profile["directory"] == current_directory for profile in available_profiles):
+        known_profiles = [(profile["directory"], profile["name"]) for profile in self.chrome_profiles]
+        refreshed_profiles = [(profile["directory"], profile["name"]) for profile in available_profiles]
+        current_profile_exists = any(profile["directory"] == current_directory for profile in available_profiles)
+        if known_profiles != refreshed_profiles:
             previous_name = self.selected_chrome_profile["name"]
             self.chrome_profiles = available_profiles
             self.profile_labels = {profile["name"]: profile for profile in self.chrome_profiles}
-            self.selected_chrome_profile = self.chrome_profiles[0]
-            self.settings["chrome_profile_directory"] = self.selected_chrome_profile["directory"]
-            self._save_settings()
-            self._apply_selected_profile()
+            if current_profile_exists:
+                self.selected_chrome_profile = next(profile for profile in self.chrome_profiles if profile["directory"] == current_directory)
+            else:
+                self.selected_chrome_profile = self.chrome_profiles[0]
+                self.settings["chrome_profile_directory"] = self.selected_chrome_profile["directory"]
+                self._save_settings()
+                self._apply_selected_profile()
             self.profile_value.set(self.selected_chrome_profile["name"])
             self.current_profile_label.configure(text=self.selected_chrome_profile["name"])
             self.profile_selector.configure(values=list(self.profile_labels))
-            self.profile_editor.pack_forget()
             if len(self.chrome_profiles) > 1:
                 self.profile_change_button.pack(side="right")
             else:
                 self.profile_change_button.pack_forget()
-            self.extension_setup_prompted = False
-            self._set_extension_status("Chrome 확장 프로그램 연결 확인 중…")
-            self._set_status(f"사용 중이던 Chrome 프로필({previous_name})이 삭제되어 {self.selected_chrome_profile['name']} 프로필로 변경했습니다.", True)
-            self.root.after(500, self._check_extension_connection)
+            if not current_profile_exists:
+                self.profile_editor.pack_forget()
+                self.extension_setup_prompted = False
+                self._set_extension_status("Chrome 확장 프로그램 연결 확인 중…")
+                self._set_status(f"사용 중이던 Chrome 프로필({previous_name})이 삭제되어 {self.selected_chrome_profile['name']} 프로필로 변경했습니다.", True)
+                self.root.after(500, self._check_extension_connection)
         self.root.after(5_000, self._check_selected_profile_exists)
 
     def _save_settings(self) -> None:
