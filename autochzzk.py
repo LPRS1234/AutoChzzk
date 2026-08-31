@@ -89,6 +89,7 @@ def get_latest_release() -> dict:
 
 def get_chrome_profiles() -> list[dict[str, str]]:
     local_state = Path(os.environ.get("LOCALAPPDATA", "")) / "Google" / "Chrome" / "User Data" / "Local State"
+    user_data_dir = local_state.parent
     try:
         info_cache = json.loads(local_state.read_text(encoding="utf-8")).get("profile", {}).get("info_cache", {})
     except (OSError, json.JSONDecodeError):
@@ -96,6 +97,8 @@ def get_chrome_profiles() -> list[dict[str, str]]:
     profiles = []
     for directory, info in info_cache.items():
         if not isinstance(directory, str) or not isinstance(info, dict):
+            continue
+        if not (user_data_dir / directory).is_dir():
             continue
         email = str(info.get("user_name") or "")
         name = email.split("@", 1)[0] if "@" in email else str(info.get("name") or info.get("gaia_name") or directory)
@@ -305,6 +308,7 @@ class AutoChzzkApp:
         root.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
         root.after(500, self._check_extension_connection)
         root.after(1_000, self._refresh_extension_status)
+        root.after(5_000, self._check_selected_profile_exists)
         threading.Thread(target=self._monitor, daemon=True).start()
         threading.Thread(target=self._check_saved_channels_on_start, daemon=True).start()
         threading.Thread(target=self._check_for_update, daemon=True).start()
@@ -420,6 +424,36 @@ class AutoChzzkApp:
         self.profile_labels = {profile["name"]: profile for profile in self.chrome_profiles}
         saved_profile_directory = self.settings.get("chrome_profile_directory")
         self.selected_chrome_profile = next((profile for profile in self.chrome_profiles if profile["directory"] == saved_profile_directory), self.chrome_profiles[0])
+        if saved_profile_directory and self.selected_chrome_profile["directory"] != saved_profile_directory:
+            self.settings["chrome_profile_directory"] = self.selected_chrome_profile["directory"]
+            self._save_settings()
+
+    def _check_selected_profile_exists(self) -> None:
+        if self.stop_event.is_set():
+            return
+        current_directory = self.selected_chrome_profile["directory"]
+        available_profiles = get_chrome_profiles()
+        if not any(profile["directory"] == current_directory for profile in available_profiles):
+            previous_name = self.selected_chrome_profile["name"]
+            self.chrome_profiles = available_profiles
+            self.profile_labels = {profile["name"]: profile for profile in self.chrome_profiles}
+            self.selected_chrome_profile = self.chrome_profiles[0]
+            self.settings["chrome_profile_directory"] = self.selected_chrome_profile["directory"]
+            self._save_settings()
+            self._apply_selected_profile()
+            self.profile_value.set(self.selected_chrome_profile["name"])
+            self.current_profile_label.configure(text=self.selected_chrome_profile["name"])
+            self.profile_selector.configure(values=list(self.profile_labels))
+            self.profile_editor.pack_forget()
+            if len(self.chrome_profiles) > 1:
+                self.profile_change_button.pack(side="right")
+            else:
+                self.profile_change_button.pack_forget()
+            self.extension_setup_prompted = False
+            self._set_extension_status("Chrome 확장 프로그램 연결 확인 중…")
+            self._set_status(f"사용 중이던 Chrome 프로필({previous_name})이 삭제되어 {self.selected_chrome_profile['name']} 프로필로 변경했습니다.", True)
+            self.root.after(500, self._check_extension_connection)
+        self.root.after(5_000, self._check_selected_profile_exists)
 
     def _save_settings(self) -> None:
         SETTINGS_PATH.write_text(json.dumps(self.settings, ensure_ascii=False, indent=2), encoding="utf-8")
