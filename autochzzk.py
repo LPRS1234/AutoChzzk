@@ -25,6 +25,8 @@ except ImportError:
     pystray = None
 
 APP_NAME = "AutoChzzk"
+APP_VERSION = "1.1.0"
+UPDATE_API_URL = "https://api.github.com/repos/LPRS1234/AutoChzzk/releases/latest"
 MUTEX_NAME = "Local\\AutoChzzk_SingleInstance_1"
 if getattr(sys, "frozen", False):
     APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / APP_NAME
@@ -68,6 +70,21 @@ def get_channel_name(channel_id: str) -> str:
 def get_live_status(channel_id: str) -> tuple[bool, str]:
     content = request_content(LIVE_API_URL.format(channel_id=channel_id))
     return content.get("status") == "OPEN", content.get("liveTitle") or "제목 없는 방송"
+
+
+def version_key(version: str) -> tuple[int, ...]:
+    """Convert a release tag such as v1.2.0 into a comparable version tuple."""
+    numbers = re.findall(r"\d+", version)
+    return tuple(int(number) for number in numbers) if numbers else ()
+
+
+def get_latest_release() -> dict:
+    request = urllib.request.Request(
+        UPDATE_API_URL,
+        headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}", "Accept": "application/vnd.github+json"},
+    )
+    with urllib.request.urlopen(request, timeout=8) as response:
+        return json.load(response)
 
 
 def get_chrome_profiles() -> list[dict[str, str]]:
@@ -293,6 +310,7 @@ class AutoChzzkApp:
         root.after(1_000, self._refresh_extension_status)
         threading.Thread(target=self._monitor, daemon=True).start()
         threading.Thread(target=self._check_saved_channels_on_start, daemon=True).start()
+        threading.Thread(target=self._check_for_update, daemon=True).start()
 
     def _load_brand_icons(self) -> None:
         if not LOGO_PATH.is_file(): return
@@ -396,6 +414,36 @@ class AutoChzzkApp:
         self.extension_status_value.set(message)
         if hasattr(self, "extension_status_dot"):
             self.extension_status_dot.configure(fg=self.ACCENT if connected else self.DANGER if connected is False else self.MUTED)
+
+    def _check_for_update(self) -> None:
+        """Check published GitHub Releases without delaying the app startup."""
+        try:
+            release = get_latest_release()
+            latest_version = str(release.get("tag_name") or release.get("name") or "")
+            if not latest_version or version_key(latest_version) <= version_key(APP_VERSION):
+                return
+            assets = release.get("assets") or []
+            installer = next((asset for asset in assets if str(asset.get("name", "")).lower().endswith(".exe")), None)
+            download_url = str((installer or {}).get("browser_download_url") or release.get("html_url") or "")
+            if download_url:
+                self._ui(self._offer_update, latest_version.lstrip("vV"), download_url)
+        except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError, TimeoutError, OSError):
+            # An update check must never interrupt normal channel monitoring.
+            return
+
+    def _offer_update(self, latest_version: str, download_url: str) -> None:
+        if self.stop_event.is_set():
+            return
+        if self.active_dialog is not None and self.active_dialog.winfo_exists():
+            self.root.after(1_000, lambda: self._offer_update(latest_version, download_url))
+            return
+        self._show_app_dialog(
+            "새 업데이트가 있습니다",
+            f"AutoChzzk {latest_version} 버전을 설치할 수 있습니다.\n현재 버전: {APP_VERSION}\n\n다운로드 페이지를 열어 새 설치 파일을 실행해 주세요.",
+            "다운로드",
+            lambda: webbrowser.open(download_url, new=2),
+            "나중에",
+        )
 
     def _refresh_extension_status(self) -> None:
         if self.stop_event.is_set():
