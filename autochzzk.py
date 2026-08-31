@@ -388,7 +388,7 @@ class AutoChzzkApp:
         self.status_dot.pack(side="left", padx=(0, 7))
         tk.Label(status, textvariable=self.status_value, fg=self.TEXT, bg="#1D2C29", font=("Malgun Gothic", 9), anchor="w").pack(side="left", fill="x", expand=True)
         list_box = tk.Frame(outer, bg=self.SURFACE); list_box.pack(fill="both", expand=True)
-        self.canvas = tk.Canvas(list_box, bg=self.SURFACE, highlightthickness=0)
+        self.canvas = tk.Canvas(list_box, bg=self.SURFACE, highlightthickness=0, height=255)
         scrollbar = ttk.Scrollbar(list_box, orient="vertical", command=self.canvas.yview, style="Dark.Vertical.TScrollbar")
         self.list_frame = tk.Frame(self.canvas, bg=self.SURFACE, padx=12, pady=10)
         self.list_window = self.canvas.create_window((0, 0), window=self.list_frame, anchor="nw")
