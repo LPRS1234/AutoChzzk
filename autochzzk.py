@@ -920,6 +920,8 @@ if __name__ == "__main__":
                 pass
             sys.exit(0)
     root = tk.Tk()
-    apply_windows_title_bar(root, background=AutoChzzkApp.BG, foreground=AutoChzzkApp.TEXT)
     AutoChzzkApp(root)
+    # Tk creates its native title bar while mapping the window. Apply the DWM
+    # attributes immediately afterwards so that Tk cannot overwrite them.
+    root.after_idle(lambda: apply_windows_title_bar(root, background=AutoChzzkApp.BG, foreground=AutoChzzkApp.TEXT))
     root.mainloop()
