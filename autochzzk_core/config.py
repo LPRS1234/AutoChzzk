@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 APP_NAME = "AutoChzzk"
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.2.1"
 UPDATE_API_URL = "https://api.github.com/repos/LPRS1234/AutoChzzk/releases/latest"
 MUTEX_NAME = "Local\\AutoChzzk_SingleInstance_1"
 
@@ -51,4 +51,3 @@ def enable_windows_dpi_awareness() -> None:
         ctypes.windll.shcore.SetProcessDpiAwareness(2)
     except (AttributeError, OSError):
         return
-
