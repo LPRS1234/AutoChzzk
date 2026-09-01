@@ -113,6 +113,33 @@ def apply_windows_title_bar(root: tk.Tk, *, background: str, foreground: str) ->
         return
 
 
+def ensure_windows_taskbar_entry(root: tk.Tk) -> None:
+    """Keep a frameless Tk window visible in the Windows taskbar."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        get_parent = ctypes.windll.user32.GetParent
+        get_parent.argtypes = [wintypes.HWND]
+        get_parent.restype = wintypes.HWND
+        window = get_parent(wintypes.HWND(root.winfo_id())) or wintypes.HWND(root.winfo_id())
+        get_style = ctypes.windll.user32.GetWindowLongPtrW
+        get_style.argtypes = [wintypes.HWND, ctypes.c_int]
+        get_style.restype = ctypes.c_ssize_t
+        set_style = ctypes.windll.user32.SetWindowLongPtrW
+        set_style.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_ssize_t]
+        set_style.restype = ctypes.c_ssize_t
+
+        GWL_EXSTYLE, WS_EX_TOOLWINDOW, WS_EX_APPWINDOW = -20, 0x00000080, 0x00040000
+        style = get_style(window, GWL_EXSTYLE)
+        set_style(window, GWL_EXSTYLE, (style & ~WS_EX_TOOLWINDOW) | WS_EX_APPWINDOW)
+        ctypes.windll.user32.SetWindowPos(window, None, 0, 0, 0, 0, 0x0027)
+    except (AttributeError, OSError):
+        return
+
+
 def extract_channel_id(value: str) -> str | None:
     value = value.strip()
     if CHANNEL_ID_PATTERN.fullmatch(value):
@@ -379,6 +406,7 @@ class AutoChzzkApp:
         self._refresh_list()
         root.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
         root.after_idle(self._restore_window)
+        root.after_idle(lambda: ensure_windows_taskbar_entry(root))
         root.after(500, self._check_extension_connection)
         root.after(1_000, self._refresh_extension_status)
         root.after(5_000, self._check_selected_profile_exists)
@@ -455,7 +483,7 @@ class AutoChzzkApp:
             width, height = max(button.winfo_width(), 46), max(button.winfo_height(), 34)
             center_x, center_y = width // 2, height // 2
             if kind == "minimize":
-                button.create_line(center_x - 6, center_y + 5, center_x + 6, center_y + 5, fill=color, width=1, tags="icon")
+                button.create_line(center_x - 6, center_y, center_x + 6, center_y, fill=color, width=1, tags="icon")
             elif kind == "maximize":
                 button.create_rectangle(center_x - 5, center_y - 5, center_x + 5, center_y + 5, outline=color, width=1, tags="icon")
             else:
