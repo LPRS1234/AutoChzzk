@@ -44,6 +44,7 @@ CHANNEL_API_URL = "https://api.chzzk.naver.com/service/v1/channels/{channel_id}"
 LIVE_URL = "https://chzzk.naver.com/live/{channel_id}"
 EXTENSION_PORT = 8765
 EXTENSION_INITIAL_SYNC_SECONDS = 12
+EXTENSION_CONNECTION_GRACE_SECONDS = 6
 CHANNEL_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$", re.IGNORECASE)
 URL_ID_PATTERN = re.compile(r"chzzk\.naver\.com/(?:live/)?([0-9a-f]{32})(?:[/?#]|$)", re.IGNORECASE)
 APP_INSTANCE = None
@@ -314,6 +315,7 @@ class AutoChzzkApp:
         self.tray_icon = None
         self.active_dialog = None
         self.extension_setup_prompted = False
+        self.extension_connection_deadline = time.monotonic() + EXTENSION_CONNECTION_GRACE_SECONDS
         self.extension_server = start_extension_server()
         self.window_icon = None
         self.header_icon = None
@@ -479,7 +481,7 @@ class AutoChzzkApp:
                 self.profile_change_button.pack_forget()
             if not current_profile_exists:
                 self.profile_editor.pack_forget()
-                self.extension_setup_prompted = False
+                self._reset_extension_connection_check()
                 self._set_extension_status("Chrome 확장 프로그램 연결 확인 중…")
                 self._set_status(f"사용 중이던 Chrome 프로필({previous_name})이 삭제되어 {self.selected_chrome_profile['name']} 프로필로 변경했습니다.", True)
                 self.root.after(500, self._check_extension_connection)
@@ -495,6 +497,10 @@ class AutoChzzkApp:
         if self.selected_chrome_profile.get("email"):
             profile_keys.add(f"email:{self.selected_chrome_profile['email'].lower()}")
         CHROME_TABS.set_selected_profile(profile_keys)
+
+    def _reset_extension_connection_check(self) -> None:
+        self.extension_setup_prompted = False
+        self.extension_connection_deadline = time.monotonic() + EXTENSION_CONNECTION_GRACE_SECONDS
 
     def _set_extension_status(self, message: str, connected: bool | None = None) -> None:
         self.extension_status_value.set(message)
@@ -567,7 +573,7 @@ class AutoChzzkApp:
         self.settings["chrome_profile_directory"] = profile["directory"]
         self._save_settings()
         self._apply_selected_profile()
-        self.extension_setup_prompted = False
+        self._reset_extension_connection_check()
         self.current_profile_label.configure(text=profile["name"])
         self._set_extension_status("Chrome 확장 프로그램 연결 확인 중…")
         self._set_status(f"{profile['name']} Chrome 프로필에서만 방송 감지와 자동 접속을 사용합니다.")
@@ -651,6 +657,10 @@ class AutoChzzkApp:
                 threading.Thread(target=self._open_current_lives_after_extension_connect, daemon=True).start()
             return
         if self.extension_setup_prompted:
+            return
+        if time.monotonic() < self.extension_connection_deadline:
+            self._set_extension_status("Chrome 확장 프로그램 연결 확인 중…")
+            self.root.after(500, self._check_extension_connection)
             return
         self._set_extension_status("Chrome 확장 프로그램 연결 안 됨", False)
         self.extension_setup_prompted = True
