@@ -20,7 +20,6 @@ from autochzzk_core.chzzk_api import (
     get_channel_name,
     get_latest_release,
     get_live_status,
-    version_key,
 )
 from autochzzk_core.config import (
     APP_NAME,
@@ -32,6 +31,7 @@ from autochzzk_core.config import (
     LIVE_URL,
     LOGO_PATH,
     MUTEX_NAME,
+    UPDATE_CHECK_INTERVAL_SECONDS,
     enable_windows_dpi_awareness,
 )
 from autochzzk_core.extension import (
@@ -40,6 +40,15 @@ from autochzzk_core.extension import (
     start_extension_server,
 )
 from autochzzk_core.storage import load_channels, load_settings, save_channels, save_settings
+from autochzzk_core.updater import (
+    UpdateCancelled,
+    UpdateError,
+    UpdateInfo,
+    download_update,
+    find_available_update,
+    launch_installer,
+    verify_installer,
+)
 from autochzzk_core.widgets import MarqueeText
 
 try:
@@ -76,6 +85,8 @@ class AutoChzzkApp:
         self.stop_event = threading.Event()
         self.tray_icon = None
         self.active_dialog = None
+        self.update_download_in_progress = False
+        self.update_prompted_version: str | None = None
         self.extension_setup_prompted = False
         self.extension_connection_deadline = time.monotonic() + EXTENSION_CONNECTION_GRACE_SECONDS
         self.extension_server = start_extension_server(lambda: self._ui(self._restore_window))
@@ -95,7 +106,7 @@ class AutoChzzkApp:
         root.after(5_000, self._check_selected_profile_exists)
         threading.Thread(target=self._monitor, daemon=True).start()
         threading.Thread(target=self._check_saved_channels_on_start, daemon=True).start()
-        threading.Thread(target=self._check_for_update, daemon=True).start()
+        self._schedule_update_check()
 
     def _load_brand_icons(self) -> None:
         if not LOGO_PATH.is_file(): return
@@ -274,35 +285,119 @@ class AutoChzzkApp:
         if hasattr(self, "extension_status_dot"):
             self.extension_status_dot.configure(fg=self.ACCENT if connected else self.DANGER if connected is False else self.MUTED)
 
+    def _schedule_update_check(self) -> None:
+        if self.stop_event.is_set():
+            return
+        threading.Thread(target=self._check_for_update, daemon=True).start()
+        self.root.after(UPDATE_CHECK_INTERVAL_SECONDS * 1_000, self._schedule_update_check)
+
     def _check_for_update(self) -> None:
-        """Check published GitHub Releases without delaying the app startup."""
+        """Check published GitHub Releases without delaying app monitoring."""
         try:
-            release = get_latest_release()
-            latest_version = str(release.get("tag_name") or release.get("name") or "")
-            if not latest_version or version_key(latest_version) <= version_key(APP_VERSION):
+            update_info = find_available_update(get_latest_release())
+            if update_info is None or self.update_prompted_version == update_info.version:
                 return
-            assets = release.get("assets") or []
-            installer = next((asset for asset in assets if str(asset.get("name", "")).lower().endswith(".exe")), None)
-            download_url = str((installer or {}).get("browser_download_url") or release.get("html_url") or "")
-            if download_url:
-                self._ui(self._offer_update, latest_version.lstrip("vV"), download_url)
-        except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError, TimeoutError, OSError):
+            self._ui(self._start_update_download, update_info)
+        except (UpdateError, urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError, TimeoutError, OSError):
             # An update check must never interrupt normal channel monitoring.
             return
 
-    def _offer_update(self, latest_version: str, download_url: str) -> None:
+    def _start_update_download(self, update_info: UpdateInfo) -> None:
+        if self.stop_event.is_set() or self.update_download_in_progress:
+            return
+        if self.update_prompted_version == update_info.version:
+            return
+        self.update_download_in_progress = True
+        self._set_status(f"AutoChzzk {update_info.version} 업데이트를 다운로드하는 중입니다…")
+        threading.Thread(target=self._download_update, args=(update_info,), daemon=True).start()
+
+    def _download_update(self, update_info: UpdateInfo) -> None:
+        last_percent = -1
+
+        def report_progress(downloaded: int, total: int) -> None:
+            nonlocal last_percent
+            percent = min(100, int(downloaded * 100 / total)) if total else 0
+            if percent == last_percent:
+                return
+            last_percent = percent
+            self._ui(self._set_status, f"AutoChzzk {update_info.version} 업데이트 다운로드 중 · {percent}%")
+
+        try:
+            installer_path = download_update(
+                update_info,
+                progress=report_progress,
+                cancel_event=self.stop_event,
+            )
+        except UpdateCancelled:
+            return
+        except Exception:
+            self._ui(self._update_download_failed, update_info)
+            return
+        self._ui(self._update_download_complete, update_info, installer_path)
+
+    def _update_download_failed(self, update_info: UpdateInfo) -> None:
+        self.update_download_in_progress = False
+        self._set_status(f"AutoChzzk {update_info.version} 업데이트를 다운로드하지 못했습니다.", True)
         if self.stop_event.is_set():
             return
         if self.active_dialog is not None and self.active_dialog.winfo_exists():
-            self.root.after(1_000, lambda: self._offer_update(latest_version, download_url))
+            self.root.after(1_000, lambda: self._update_download_failed(update_info))
             return
         self._show_app_dialog(
-            "새 업데이트가 있습니다",
-            f"AutoChzzk {latest_version} 버전을 설치할 수 있습니다.\n현재 버전: {APP_VERSION}\n\n다운로드 페이지를 열어 새 설치 파일을 실행해 주세요.",
-            "다운로드",
-            lambda: webbrowser.open(download_url, new=2),
+            "업데이트 다운로드 실패",
+            "업데이트 파일을 다운로드하거나 검증하지 못했습니다.\n인터넷 연결을 확인한 뒤 다시 시도해 주세요.",
+            "다시 시도",
+            lambda: self._start_update_download(update_info),
             "나중에",
         )
+
+    def _update_download_complete(self, update_info: UpdateInfo, installer_path: Path) -> None:
+        self.update_download_in_progress = False
+        self._set_status(f"AutoChzzk {update_info.version} 업데이트를 설치할 준비가 됐습니다.")
+        self._offer_update(update_info, installer_path)
+
+    def _offer_update(self, update_info: UpdateInfo, installer_path: Path) -> None:
+        if self.stop_event.is_set():
+            return
+        if self.active_dialog is not None and self.active_dialog.winfo_exists():
+            self.root.after(1_000, lambda: self._offer_update(update_info, installer_path))
+            return
+        self.update_prompted_version = update_info.version
+        self._restore_window()
+        self._show_app_dialog(
+            "업데이트 준비 완료",
+            f"AutoChzzk {update_info.version} 다운로드와 검증이 완료됐습니다.\n현재 버전: {APP_VERSION}\n\n업데이트를 누르면 관리자 권한 확인 후 설치하고 앱을 다시 시작합니다.",
+            "업데이트",
+            lambda: self._install_update(update_info, installer_path),
+            "나중에",
+        )
+
+    def _install_update(self, update_info: UpdateInfo, installer_path: Path) -> None:
+        if not verify_installer(installer_path, update_info.sha256):
+            installer_path.unlink(missing_ok=True)
+            self.update_prompted_version = None
+            self._show_app_dialog(
+                "업데이트 검증 실패",
+                "설치 파일이 변경되었거나 손상되어 실행하지 않았습니다.",
+                "다시 다운로드",
+                lambda: self._start_update_download(update_info),
+                "나중에",
+            )
+            return
+        try:
+            launch_installer(installer_path)
+        except OSError as exc:
+            cancelled = getattr(exc, "winerror", None) == 1223
+            self.update_prompted_version = None
+            self._show_app_dialog(
+                "업데이트 취소" if cancelled else "업데이트 실행 실패",
+                "관리자 권한 요청이 취소되었습니다." if cancelled else "업데이트 설치 프로그램을 실행하지 못했습니다.",
+                "다시 시도",
+                lambda: self._install_update(update_info, installer_path),
+                "나중에",
+            )
+            return
+        self.on_close()
 
     def _refresh_extension_status(self) -> None:
         if self.stop_event.is_set():

@@ -37,6 +37,9 @@ function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   ResultCode: Integer;
 begin
+  { Give an automatic update launch time to shut down the tray and local server cleanly. }
+  if ExpandConstant('{param:AUTOUPDATE|0}') = '1' then
+    Sleep(2000);
   { Close the running tray instance so its executable can be replaced. }
   Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM "{#MyAppExeName}"', '', SW_HIDE,
     ewWaitUntilTerminated, ResultCode);
@@ -44,4 +47,4 @@ begin
 end;
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "AutoChzzk 실행"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Description: "AutoChzzk 실행"; Flags: nowait postinstall

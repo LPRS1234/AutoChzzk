@@ -9,10 +9,12 @@ from pathlib import Path
 APP_NAME = "AutoChzzk"
 APP_VERSION = "1.2.1"
 UPDATE_API_URL = "https://api.github.com/repos/LPRS1234/AutoChzzk/releases/latest"
+UPDATE_CHECK_INTERVAL_SECONDS = 6 * 60 * 60
 MUTEX_NAME = "Local\\AutoChzzk_SingleInstance_1"
 
+LOCAL_DATA_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / APP_NAME
 if getattr(sys, "frozen", False):
-    APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / APP_NAME
+    APP_DIR = LOCAL_DATA_DIR
     APP_DIR.mkdir(parents=True, exist_ok=True)
     RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", APP_DIR))
 else:
@@ -21,6 +23,7 @@ else:
 
 DATA_PATH = APP_DIR / "channels.json"
 SETTINGS_PATH = APP_DIR / "settings.json"
+UPDATE_DIR = LOCAL_DATA_DIR / "updates"
 LOGO_PATH = RESOURCE_DIR / "assets" / "logo" / "app-icon.png"
 ICO_PATH = RESOURCE_DIR / "assets" / "logo" / "app-icon.ico"
 
