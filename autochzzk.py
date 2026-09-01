@@ -184,6 +184,25 @@ class AutoChzzkApp:
         self.canvas.configure(yscrollcommand=scrollbar.set); self.canvas.pack(side="left", fill="both", expand=True); scrollbar.pack(side="right", fill="y")
         self.list_frame.bind("<Configure>", lambda _event: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
         self.canvas.bind("<Configure>", lambda event: self.canvas.itemconfigure(self.list_window, width=event.width))
+        self.root.bind_all("<MouseWheel>", self._on_list_mousewheel, add="+")
+
+    def _on_list_mousewheel(self, event) -> str | None:
+        """Scroll the channel list when the pointer is over its visible area."""
+        if not self.canvas.winfo_ismapped():
+            return None
+        pointer_x, pointer_y = self.root.winfo_pointerxy()
+        canvas_x, canvas_y = self.canvas.winfo_rootx(), self.canvas.winfo_rooty()
+        if not (
+            canvas_x <= pointer_x < canvas_x + self.canvas.winfo_width()
+            and canvas_y <= pointer_y < canvas_y + self.canvas.winfo_height()
+        ):
+            return None
+        delta = int(getattr(event, "delta", 0))
+        if delta == 0:
+            return None
+        units = max(1, abs(delta) // 120)
+        self.canvas.yview_scroll(-units if delta > 0 else units, "units")
+        return "break"
 
     def _load_channels(self) -> list[dict]:
         return load_channels()
