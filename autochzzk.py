@@ -358,6 +358,8 @@ class AutoChzzkApp:
         style.map("Dark.TButton", background=[("active", "#50545F")])
         style.configure("Small.TButton", background="#3A3D47", foreground=self.TEXT, borderwidth=0, font=("Malgun Gothic", 8, "bold"), padding=(5, 5))
         style.map("Small.TButton", background=[("active", "#50545F")])
+        style.configure("SmallAccent.TButton", background=self.ACCENT, foreground="#08251D", borderwidth=0, font=("Malgun Gothic", 8, "bold"), padding=(5, 5))
+        style.map("SmallAccent.TButton", background=[("active", "#38EDBB")])
         style.configure("DialogAccent.TButton", background=self.ACCENT, foreground="#08251D", borderwidth=0, font=("Malgun Gothic", 9, "bold"), padding=(10, 7))
         style.map("DialogAccent.TButton", background=[("active", "#38EDBB")])
         style.configure("DialogDark.TButton", background="#3A3D47", foreground=self.TEXT, borderwidth=0, font=("Malgun Gothic", 9, "bold"), padding=(10, 7))
@@ -739,14 +741,15 @@ class AutoChzzkApp:
 
     def _make_interval_editor(self, channel: dict) -> None:
         editor = tk.Frame(self.list_frame, bg="#373B45", padx=13, pady=10)
-        editor.pack(fill="x", padx=7, pady=(0, 7))
+        editor.pack(fill="x", pady=(0, 7))
         tk.Label(editor, text="확인 간격", fg=self.TEXT, bg="#373B45", font=("Malgun Gothic", 9, "bold")).pack(side="left")
         tk.Label(editor, text="최소 15초", fg=self.MUTED, bg="#373B45", font=("Malgun Gothic", 8)).pack(side="left", padx=(7, 10))
         interval_value = tk.StringVar(value=str(channel.get("interval", 60)))
         interval_entry = tk.Entry(editor, textvariable=interval_value, width=5, bg=self.INPUT, fg=self.TEXT, insertbackground=self.TEXT, relief="flat", justify="center", font=("Consolas", 10))
         interval_entry.pack(side="left", ipady=6)
         tk.Label(editor, text="초", fg=self.MUTED, bg="#373B45", font=("Malgun Gothic", 9)).pack(side="left", padx=5)
-        ttk.Button(editor, text="설정 저장", style="Accent.TButton", command=lambda value=channel["id"], field=interval_value: self.update_interval(value, field.get())).pack(side="right")
+        ttk.Button(editor, text="닫기", style="Small.TButton", command=lambda value=channel["id"]: self.show_interval_editor(value), cursor="hand2", width=8).pack(side="right")
+        ttk.Button(editor, text="설정 저장", style="SmallAccent.TButton", command=lambda value=channel["id"], field=interval_value: self.update_interval(value, field.get()), cursor="hand2", width=8).pack(side="right", padx=(0, 8))
         interval_entry.focus_set()
         interval_entry.select_range(0, "end")
 
