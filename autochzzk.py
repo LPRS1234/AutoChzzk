@@ -408,7 +408,6 @@ class AutoChzzkApp:
         tk.Label(add_card, text="치지직 채널 URL 또는 32자리 채널 ID", fg=self.MUTED, bg=self.SURFACE, font=("Malgun Gothic", 8)).pack(anchor="w", pady=(5, 0))
         controls = tk.Frame(outer, bg=self.BG); controls.pack(fill="x", pady=(0, 7))
         self.count_label = tk.Label(controls, fg=self.TEXT, bg=self.BG, font=("Malgun Gothic", 10, "bold")); self.count_label.pack(side="left")
-        tk.Label(controls, text="채널별 확인 간격은 목록에서 수정할 수 있습니다 · 최소 15초", fg=self.MUTED, bg=self.BG, font=("Malgun Gothic", 9)).pack(side="right")
         status = tk.Frame(outer, bg="#1D2C29", padx=13, pady=9)
         status.pack(fill="x", pady=(13, 0), side="bottom")
         self.status_dot = tk.Canvas(status, width=10, height=10, bg="#1D2C29", highlightthickness=0)
