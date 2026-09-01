@@ -517,9 +517,14 @@ class AutoChzzkApp:
         self.channels = [channel for channel in self.channels if channel["id"] != channel_id]; self.was_live.pop(channel_id, None); self.editing_channel_id = None; self._save_channels(); self._refresh_list()
 
     def update_interval(self, channel_id: str, value: str) -> None:
-        try: interval = max(15, int(value))
+        try:
+            interval = int(value)
         except ValueError:
-            messagebox.showerror(APP_NAME, "확인 간격은 15 이상의 숫자로 입력해 주세요."); return
+            self._show_app_dialog("입력 확인", "확인 간격은 15 이상의 숫자로 입력해 주세요.")
+            return
+        if interval < 15:
+            self._show_app_dialog("입력 확인", "확인 간격은 최소 15초 이상이어야 합니다.")
+            return
         channel_name = channel_id
         for channel in self.channels:
             if channel["id"] == channel_id:
