@@ -95,10 +95,15 @@ def apply_windows_title_bar(root: tk.Tk, *, background: str, foreground: str) ->
 
         # The color attributes are supported by Windows 11. Dark mode is a
         # useful fallback on Windows 10, where caption colors are unavailable.
+        set_attribute(19, 1)  # DWMWA_USE_IMMERSIVE_DARK_MODE (older builds)
         set_attribute(20, 1)  # DWMWA_USE_IMMERSIVE_DARK_MODE
         set_attribute(34, colorref(background))  # DWMWA_BORDER_COLOR
         set_attribute(35, colorref(background))  # DWMWA_CAPTION_COLOR
         set_attribute(36, colorref(foreground))  # DWMWA_TEXT_COLOR
+        ctypes.windll.user32.SetWindowPos(
+            wintypes.HWND(root.winfo_id()), None, 0, 0, 0, 0,
+            0x0027,  # SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED
+        )
     except (AttributeError, OSError, ValueError):
         return
 
