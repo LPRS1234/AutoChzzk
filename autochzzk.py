@@ -70,6 +70,39 @@ def enable_windows_dpi_awareness() -> None:
         return
 
 
+def apply_windows_title_bar(root: tk.Tk, *, background: str, foreground: str) -> None:
+    """Match the native Windows title bar to the application's dark palette."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        def colorref(hex_color: str) -> int:
+            red = int(hex_color[1:3], 16)
+            green = int(hex_color[3:5], 16)
+            blue = int(hex_color[5:7], 16)
+            return red | (green << 8) | (blue << 16)
+
+        def set_attribute(attribute: int, value: int) -> None:
+            data = ctypes.c_int(value)
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                wintypes.HWND(root.winfo_id()),
+                attribute,
+                ctypes.byref(data),
+                ctypes.sizeof(data),
+            )
+
+        # The color attributes are supported by Windows 11. Dark mode is a
+        # useful fallback on Windows 10, where caption colors are unavailable.
+        set_attribute(20, 1)  # DWMWA_USE_IMMERSIVE_DARK_MODE
+        set_attribute(34, colorref(background))  # DWMWA_BORDER_COLOR
+        set_attribute(35, colorref(background))  # DWMWA_CAPTION_COLOR
+        set_attribute(36, colorref(foreground))  # DWMWA_TEXT_COLOR
+    except (AttributeError, OSError, ValueError):
+        return
+
+
 def extract_channel_id(value: str) -> str | None:
     value = value.strip()
     if CHANNEL_ID_PATTERN.fullmatch(value):
@@ -881,4 +914,7 @@ if __name__ == "__main__":
             except urllib.error.URLError:
                 pass
             sys.exit(0)
-    root = tk.Tk(); AutoChzzkApp(root); root.mainloop()
+    root = tk.Tk()
+    apply_windows_title_bar(root, background=AutoChzzkApp.BG, foreground=AutoChzzkApp.TEXT)
+    AutoChzzkApp(root)
+    root.mainloop()
