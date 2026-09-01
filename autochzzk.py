@@ -70,76 +70,6 @@ def enable_windows_dpi_awareness() -> None:
         return
 
 
-def apply_windows_title_bar(root: tk.Tk, *, background: str, foreground: str) -> None:
-    """Match the native Windows title bar to the application's dark palette."""
-    if sys.platform != "win32":
-        return
-    try:
-        import ctypes
-        from ctypes import wintypes
-
-        get_parent = ctypes.windll.user32.GetParent
-        get_parent.argtypes = [wintypes.HWND]
-        get_parent.restype = wintypes.HWND
-        title_bar_window = get_parent(wintypes.HWND(root.winfo_id())) or wintypes.HWND(root.winfo_id())
-
-        def colorref(hex_color: str) -> int:
-            red = int(hex_color[1:3], 16)
-            green = int(hex_color[3:5], 16)
-            blue = int(hex_color[5:7], 16)
-            return red | (green << 8) | (blue << 16)
-
-        def set_attribute(attribute: int, value: int) -> None:
-            data = ctypes.c_int(value)
-            ctypes.windll.dwmapi.DwmSetWindowAttribute(
-                title_bar_window,
-                attribute,
-                ctypes.byref(data),
-                ctypes.sizeof(data),
-            )
-
-        # The color attributes are supported by Windows 11. Dark mode is a
-        # useful fallback on Windows 10, where caption colors are unavailable.
-        set_attribute(19, 1)  # DWMWA_USE_IMMERSIVE_DARK_MODE (older builds)
-        set_attribute(20, 1)  # DWMWA_USE_IMMERSIVE_DARK_MODE
-        set_attribute(34, colorref(background))  # DWMWA_BORDER_COLOR
-        set_attribute(35, colorref(background))  # DWMWA_CAPTION_COLOR
-        set_attribute(36, colorref(foreground))  # DWMWA_TEXT_COLOR
-        ctypes.windll.user32.SetWindowPos(
-            title_bar_window, None, 0, 0, 0, 0,
-            0x0027,  # SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED
-        )
-    except (AttributeError, OSError, ValueError):
-        return
-
-
-def ensure_windows_taskbar_entry(root: tk.Tk) -> None:
-    """Keep a frameless Tk window visible in the Windows taskbar."""
-    if sys.platform != "win32":
-        return
-    try:
-        import ctypes
-        from ctypes import wintypes
-
-        get_parent = ctypes.windll.user32.GetParent
-        get_parent.argtypes = [wintypes.HWND]
-        get_parent.restype = wintypes.HWND
-        window = get_parent(wintypes.HWND(root.winfo_id())) or wintypes.HWND(root.winfo_id())
-        get_style = ctypes.windll.user32.GetWindowLongPtrW
-        get_style.argtypes = [wintypes.HWND, ctypes.c_int]
-        get_style.restype = ctypes.c_ssize_t
-        set_style = ctypes.windll.user32.SetWindowLongPtrW
-        set_style.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_ssize_t]
-        set_style.restype = ctypes.c_ssize_t
-
-        GWL_EXSTYLE, WS_EX_TOOLWINDOW, WS_EX_APPWINDOW = -20, 0x00000080, 0x00040000
-        style = get_style(window, GWL_EXSTYLE)
-        set_style(window, GWL_EXSTYLE, (style & ~WS_EX_TOOLWINDOW) | WS_EX_APPWINDOW)
-        ctypes.windll.user32.SetWindowPos(window, None, 0, 0, 0, 0, 0x0027)
-    except (AttributeError, OSError):
-        return
-
-
 def extract_channel_id(value: str) -> str | None:
     value = value.strip()
     if CHANNEL_ID_PATTERN.fullmatch(value):
@@ -365,12 +295,6 @@ class AutoChzzkApp:
         root.geometry("620x650")
         root.minsize(540, 540)
         root.configure(bg=self.BG)
-        self.uses_custom_title_bar = sys.platform == "win32"
-        self.is_maximized = False
-        self.restore_geometry = ""
-        self.drag_offset = (0, 0)
-        if self.uses_custom_title_bar:
-            root.overrideredirect(True)
         self.input_value, self.status_value = tk.StringVar(), tk.StringVar()
         self.extension_status_value = tk.StringVar(value="Chrome 확장 프로그램 연결 확인 중…")
         self.settings = self._load_settings()
@@ -398,15 +322,12 @@ class AutoChzzkApp:
         # for one periodic tab report before opening any startup-detected live.
         self.allow_browser_open_after = time.monotonic() + EXTENSION_INITIAL_SYNC_SECONDS
         self._configure_styles()
-        self._build_window_chrome()
         self._build_ui()
         self._start_tray_icon()
         global APP_INSTANCE
         APP_INSTANCE = self
         self._refresh_list()
         root.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
-        root.after_idle(self._restore_window)
-        root.after_idle(lambda: ensure_windows_taskbar_entry(root))
         root.after(500, self._check_extension_connection)
         root.after(1_000, self._refresh_extension_status)
         root.after(5_000, self._check_selected_profile_exists)
@@ -447,76 +368,6 @@ class AutoChzzkApp:
         self.root.option_add("*TCombobox*Listbox.foreground", self.TEXT)
         self.root.option_add("*TCombobox*Listbox.selectBackground", self.ACCENT)
         self.root.option_add("*TCombobox*Listbox.selectForeground", "#08251D")
-
-    def _build_window_chrome(self) -> None:
-        """Draw a reliable dark title bar when Windows won't theme Tk's native one."""
-        if not self.uses_custom_title_bar:
-            return
-        bar = tk.Frame(self.root, bg=self.SURFACE, height=34)
-        bar.pack(fill="x", side="top")
-        bar.pack_propagate(False)
-        drag_targets = [bar]
-        if self.header_icon is not None:
-            icon = tk.Label(bar, image=self.header_icon, bg=self.SURFACE)
-            icon.pack(side="left", padx=(9, 6))
-            drag_targets.append(icon)
-        title = tk.Label(bar, text=APP_NAME, fg=self.TEXT, bg=self.SURFACE, font=("Segoe UI", 9))
-        title.pack(side="left")
-        drag_targets.append(title)
-        for widget in drag_targets:
-            widget.bind("<ButtonPress-1>", self._start_window_drag)
-            widget.bind("<B1-Motion>", self._drag_window)
-            widget.bind("<Double-Button-1>", self._toggle_maximize)
-
-        self._chrome_button(bar, "close", self.hide_to_tray, active_bg="#C42B3B").pack(side="right", fill="y")
-        self._chrome_button(bar, "maximize", self._toggle_maximize).pack(side="right", fill="y")
-        self._chrome_button(bar, "minimize", self._minimize_window).pack(side="right", fill="y")
-
-    def _chrome_button(self, parent, kind: str, command, *, active_bg: str = "#50545F") -> tk.Canvas:
-        button = tk.Canvas(parent, width=46, height=34, bg=self.SURFACE, highlightthickness=0, bd=0, cursor="hand2")
-
-        def draw(active: bool = False) -> None:
-            button.delete("icon")
-            background = active_bg if active else self.SURFACE
-            button.configure(bg=background)
-            color = self.TEXT
-            width, height = max(button.winfo_width(), 46), max(button.winfo_height(), 34)
-            center_x, center_y = width // 2, height // 2
-            if kind == "minimize":
-                button.create_line(center_x - 6, center_y, center_x + 6, center_y, fill=color, width=1, tags="icon")
-            elif kind == "maximize":
-                button.create_rectangle(center_x - 5, center_y - 5, center_x + 5, center_y + 5, outline=color, width=1, tags="icon")
-            else:
-                button.create_line(center_x - 5, center_y - 5, center_x + 5, center_y + 5, fill=color, width=1, tags="icon")
-                button.create_line(center_x + 5, center_y - 5, center_x - 5, center_y + 5, fill=color, width=1, tags="icon")
-
-        button.bind("<Button-1>", lambda _event: command())
-        button.bind("<Enter>", lambda _event: draw(True))
-        button.bind("<Leave>", lambda _event: draw(False))
-        button.bind("<Configure>", lambda _event: draw())
-        draw()
-        return button
-
-    def _start_window_drag(self, event) -> None:
-        if not self.is_maximized:
-            self.drag_offset = (event.x_root - self.root.winfo_x(), event.y_root - self.root.winfo_y())
-
-    def _drag_window(self, event) -> None:
-        if not self.is_maximized:
-            self.root.geometry(f"+{event.x_root - self.drag_offset[0]}+{event.y_root - self.drag_offset[1]}")
-
-    def _minimize_window(self) -> None:
-        self.root.overrideredirect(False)
-        self.root.iconify()
-
-    def _toggle_maximize(self, _event=None) -> None:
-        if self.is_maximized:
-            self.root.state("normal")
-            self.root.geometry(self.restore_geometry)
-        else:
-            self.restore_geometry = self.root.geometry()
-            self.root.state("zoomed")
-        self.is_maximized = not self.is_maximized
 
     def _build_ui(self) -> None:
         outer = tk.Frame(self.root, bg=self.BG, padx=30, pady=24); outer.pack(fill="both", expand=True)
@@ -1012,12 +863,7 @@ class AutoChzzkApp:
         self._start_tray_icon()
 
     def show_window(self, _icon=None, _item=None) -> None: self.root.after(0, self._restore_window)
-    def _restore_window(self) -> None:
-        self.root.deiconify()
-        if self.uses_custom_title_bar:
-            self.root.after_idle(lambda: self.root.overrideredirect(True))
-        self.root.lift()
-        self.root.focus_force()
+    def _restore_window(self) -> None: self.root.deiconify(); self.root.lift(); self.root.focus_force()
     def quit_from_tray(self, _icon=None, _item=None) -> None: self.root.after(0, self.on_close)
     def on_close(self) -> None:
         global APP_INSTANCE
@@ -1043,9 +889,4 @@ if __name__ == "__main__":
             except urllib.error.URLError:
                 pass
             sys.exit(0)
-    root = tk.Tk()
-    AutoChzzkApp(root)
-    # Tk creates its native title bar while mapping the window. Apply the DWM
-    # attributes immediately afterwards so that Tk cannot overwrite them.
-    root.after_idle(lambda: apply_windows_title_bar(root, background=AutoChzzkApp.BG, foreground=AutoChzzkApp.TEXT))
-    root.mainloop()
+    root = tk.Tk(); AutoChzzkApp(root); root.mainloop()
