@@ -461,7 +461,7 @@ class AutoChzzkApp:
         if watching_count:
             self._set_status(f"{watching_count}개의 방송을 시청 중")
         elif live_count:
-            self._set_status(f"{live_count}개의 방송을 적용 프로필과 다른 프로필에서 시청 중입니다.", True)
+            self._set_status(f"현재 방송 중인 등록 채널이 {live_count}개 있습니다.")
         else:
             self._set_status("현재 방송 중인 등록 채널이 없습니다.")
 
