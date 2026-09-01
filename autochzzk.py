@@ -3,288 +3,50 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import subprocess
 import sys
 import threading
 import tkinter as tk
 import time
-import uuid
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import urllib.error
 import urllib.request
 import webbrowser
 from pathlib import Path
-from tkinter import font as tkfont
 from tkinter import messagebox, ttk
+
+from autochzzk_core.chrome_profiles import get_chrome_profiles
+from autochzzk_core.chzzk_api import (
+    extract_channel_id,
+    get_channel_name,
+    get_latest_release,
+    get_live_status,
+    version_key,
+)
+from autochzzk_core.config import (
+    APP_NAME,
+    APP_VERSION,
+    EXTENSION_CONNECTION_GRACE_SECONDS,
+    EXTENSION_INITIAL_SYNC_SECONDS,
+    EXTENSION_PORT,
+    ICO_PATH,
+    LIVE_URL,
+    LOGO_PATH,
+    MUTEX_NAME,
+    enable_windows_dpi_awareness,
+)
+from autochzzk_core.extension import (
+    CHROME_TABS,
+    clear_show_window_callback,
+    start_extension_server,
+)
+from autochzzk_core.storage import load_channels, load_settings, save_channels, save_settings
+from autochzzk_core.widgets import MarqueeText
 
 try:
     import pystray
     from PIL import Image, ImageDraw, ImageTk
 except ImportError:
     pystray = None
-
-APP_NAME = "AutoChzzk"
-APP_VERSION = "1.2.0"
-UPDATE_API_URL = "https://api.github.com/repos/LPRS1234/AutoChzzk/releases/latest"
-MUTEX_NAME = "Local\\AutoChzzk_SingleInstance_1"
-if getattr(sys, "frozen", False):
-    APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home())) / APP_NAME
-    APP_DIR.mkdir(parents=True, exist_ok=True)
-    RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", APP_DIR))
-else:
-    APP_DIR = Path(__file__).parent
-    RESOURCE_DIR = APP_DIR
-DATA_PATH = APP_DIR / "channels.json"
-SETTINGS_PATH = APP_DIR / "settings.json"
-LOGO_PATH = RESOURCE_DIR / "assets" / "logo" / "app-icon.png"
-ICO_PATH = RESOURCE_DIR / "assets" / "logo" / "app-icon.ico"
-LIVE_API_URL = "https://api.chzzk.naver.com/polling/v3.1/channels/{channel_id}/live-status"
-CHANNEL_API_URL = "https://api.chzzk.naver.com/service/v1/channels/{channel_id}"
-LIVE_URL = "https://chzzk.naver.com/live/{channel_id}"
-EXTENSION_PORT = 8765
-EXTENSION_INITIAL_SYNC_SECONDS = 12
-EXTENSION_CONNECTION_GRACE_SECONDS = 6
-CHANNEL_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$", re.IGNORECASE)
-URL_ID_PATTERN = re.compile(r"chzzk\.naver\.com/(?:live/)?([0-9a-f]{32})(?:[/?#]|$)", re.IGNORECASE)
-APP_INSTANCE = None
-
-
-def enable_windows_dpi_awareness() -> None:
-    """Render Tk widgets at the display's native DPI instead of bitmap scaling."""
-    if sys.platform != "win32":
-        return
-    try:
-        import ctypes
-
-        # This must run before the first window is created. Per-monitor V2
-        # keeps the app sharp when it moves between displays with different
-        # Windows scaling settings.
-        if ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):
-            return
-
-        # Fallback for older Windows versions without the V2 API.
-        ctypes.windll.shcore.SetProcessDpiAwareness(2)
-    except (AttributeError, OSError):
-        # DPI awareness is optional; unsupported Windows environments should
-        # still be able to run the application.
-        return
-
-
-def extract_channel_id(value: str) -> str | None:
-    value = value.strip()
-    if CHANNEL_ID_PATTERN.fullmatch(value):
-        return value.lower()
-    match = URL_ID_PATTERN.search(value)
-    return match.group(1).lower() if match else None
-
-
-def request_content(url: str) -> dict:
-    request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 AutoChzzk/1.1", "Accept": "application/json"})
-    with urllib.request.urlopen(request, timeout=15) as response:
-        return json.load(response).get("content") or {}
-
-
-def get_channel_name(channel_id: str) -> str:
-    return request_content(CHANNEL_API_URL.format(channel_id=channel_id)).get("channelName") or channel_id
-
-
-def get_live_status(channel_id: str) -> tuple[bool, str]:
-    content = request_content(LIVE_API_URL.format(channel_id=channel_id))
-    return content.get("status") == "OPEN", content.get("liveTitle") or "제목 없는 방송"
-
-
-def version_key(version: str) -> tuple[int, ...]:
-    """Convert a release tag such as v1.2.0 into a comparable version tuple."""
-    numbers = re.findall(r"\d+", version)
-    return tuple(int(number) for number in numbers) if numbers else ()
-
-
-def get_latest_release() -> dict:
-    request = urllib.request.Request(
-        UPDATE_API_URL,
-        headers={"User-Agent": f"{APP_NAME}/{APP_VERSION}", "Accept": "application/vnd.github+json"},
-    )
-    with urllib.request.urlopen(request, timeout=8) as response:
-        return json.load(response)
-
-
-def get_chrome_profiles() -> list[dict[str, str]]:
-    local_state = Path(os.environ.get("LOCALAPPDATA", "")) / "Google" / "Chrome" / "User Data" / "Local State"
-    user_data_dir = local_state.parent
-    try:
-        info_cache = json.loads(local_state.read_text(encoding="utf-8")).get("profile", {}).get("info_cache", {})
-    except (OSError, json.JSONDecodeError):
-        info_cache = {}
-    profiles = []
-    for directory, info in info_cache.items():
-        if not isinstance(directory, str) or not isinstance(info, dict):
-            continue
-        if not (user_data_dir / directory).is_dir():
-            continue
-        email = str(info.get("user_name") or "")
-        name = email.split("@", 1)[0] if "@" in email else str(info.get("name") or info.get("gaia_name") or directory)
-        profiles.append({"directory": directory, "name": name, "gaia_id": str(info.get("gaia_id") or ""), "email": email})
-    return profiles or [{"directory": "Default", "name": "기본 프로필", "gaia_id": "", "email": ""}]
-
-
-class ChromeTabState:
-    """Short-lived CHZZK tab reports from every installed Chrome profile."""
-    def __init__(self) -> None:
-        self.clients: dict[str, tuple[set[str], set[str], float]] = {}
-        self.selected_profile_keys: set[str] = set()
-        self.last_focused_client_id: str | None = None
-        self.pending_opens: dict[str, tuple[str, str]] = {}
-        self.lock = threading.Lock()
-
-    def _fresh_clients(self) -> dict[str, tuple[set[str], set[str], float]]:
-        now = time.monotonic()
-        return {client_id: report for client_id, report in self.clients.items() if now - report[2] < 30}
-
-    def set_selected_profile(self, profile_keys: set[str]) -> None:
-        with self.lock:
-            self.selected_profile_keys = profile_keys
-
-    def _selected_clients(self) -> dict[str, tuple[set[str], set[str], float]]:
-        return {client_id: report for client_id, report in self._fresh_clients().items() if report[1] & self.selected_profile_keys}
-
-    def update(self, client_id: str, channel_ids: set[str], profile_keys: set[str], focused: bool) -> None:
-        with self.lock:
-            self.clients[client_id] = (channel_ids, profile_keys, time.monotonic())
-            self.clients = self._fresh_clients()
-            if focused:
-                self.last_focused_client_id = client_id
-
-    def is_watched(self, channel_id: str) -> bool:
-        with self.lock:
-            return any(channel_id in channel_ids for channel_ids, _profile_keys, _updated_at in self._selected_clients().values())
-
-    def is_connected(self) -> bool:
-        with self.lock:
-            return bool(self._selected_clients())
-
-    def queue_background_open(self, url: str) -> str:
-        command_id = uuid.uuid4().hex
-        with self.lock:
-            clients = self._selected_clients()
-            if not clients:
-                return ""
-            target_client_id = self.last_focused_client_id if self.last_focused_client_id in clients else max(clients, key=lambda client_id: clients[client_id][2])
-            self.pending_opens[command_id] = (url, target_client_id)
-        return command_id
-
-    def pending_commands(self, client_id: str) -> list[dict[str, str]]:
-        with self.lock:
-            return [{"id": command_id, "url": url} for command_id, (url, target_client_id) in self.pending_opens.items() if target_client_id == client_id]
-
-    def acknowledge_commands(self, client_id: str, command_ids: list[str]) -> None:
-        with self.lock:
-            for command_id in command_ids:
-                command = self.pending_opens.get(command_id)
-                if command is not None and command[1] == client_id:
-                    self.pending_opens.pop(command_id, None)
-
-    def is_pending(self, command_id: str) -> bool:
-        with self.lock:
-            return bool(command_id) and command_id in self.pending_opens
-
-    def discard_command(self, command_id: str) -> None:
-        with self.lock:
-            self.pending_opens.pop(command_id, None)
-
-
-CHROME_TABS = ChromeTabState()
-
-
-class ExtensionRequestHandler(BaseHTTPRequestHandler):
-    def _reply(self, status: int = 200, payload: dict | None = None) -> None:
-        self.send_response(status)
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "POST, OPTIONS")
-        self.send_header("Content-Type", "application/json")
-        self.end_headers()
-        self.wfile.write(json.dumps(payload or {"ok": True}).encode("utf-8"))
-
-    def do_OPTIONS(self) -> None:  # noqa: N802
-        self._reply()
-
-    def do_POST(self) -> None:  # noqa: N802
-        if self.path == "/show-window":
-            if APP_INSTANCE is not None:
-                APP_INSTANCE._ui(APP_INSTANCE._restore_window)
-                self._reply()
-            else:
-                self._reply(503)
-            return
-        if self.path != "/chzzk-tabs":
-            self._reply(404)
-            return
-        try:
-            size = max(0, min(int(self.headers.get("Content-Length", "0")), 16_384))
-            payload = json.loads(self.rfile.read(size).decode("utf-8"))
-            client_id = payload.get("clientId", "")
-            if not isinstance(client_id, str) or not 8 <= len(client_id) <= 128:
-                self._reply(400)
-                return
-            channel_ids = {value.lower() for value in payload.get("channelIds", []) if isinstance(value, str) and CHANNEL_ID_PATTERN.fullmatch(value)}
-            profile_keys = set()
-            profile_gaia_id = payload.get("profileGaiaId", "")
-            profile_email = payload.get("profileEmail", "")
-            if isinstance(profile_gaia_id, str) and profile_gaia_id:
-                profile_keys.add(f"gaia:{profile_gaia_id}")
-            if isinstance(profile_email, str) and profile_email:
-                profile_keys.add(f"email:{profile_email.lower()}")
-            CHROME_TABS.update(client_id, channel_ids, profile_keys, bool(payload.get("focused")))
-            completed = [value for value in payload.get("completedCommandIds", []) if isinstance(value, str)]
-            CHROME_TABS.acknowledge_commands(client_id, completed)
-            self._reply(payload={"ok": True, "openCommands": CHROME_TABS.pending_commands(client_id)})
-        except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
-            self._reply(400)
-
-    def log_message(self, _format: str, *_args) -> None:
-        return
-
-
-def start_extension_server() -> ThreadingHTTPServer | None:
-    try:
-        server = ThreadingHTTPServer(("127.0.0.1", EXTENSION_PORT), ExtensionRequestHandler)
-    except OSError:
-        return None
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    return server
-
-
-class MarqueeText(tk.Canvas):
-    """A single-line label that scrolls left only when its text is too long."""
-    def __init__(self, parent, text: str, *, fg: str, bg: str, font, height: int = 22) -> None:
-        super().__init__(parent, bg=bg, height=height, highlightthickness=0, bd=0, takefocus=0)
-        self.text_width = tkfont.Font(font=font).measure(text)
-        self.item = self.create_text(0, height // 2, text=text, fill=fg, font=font, anchor="w")
-        self.scrolling = False
-        self.after_id = None
-        self.bind("<Configure>", self._fit_text)
-
-    def _fit_text(self, _event=None) -> None:
-        if not self.winfo_exists(): return
-        if self.text_width <= self.winfo_width():
-            self.scrolling = False
-            self.coords(self.item, 0, self.winfo_height() // 2)
-            return
-        self.scrolling = True
-        if self.after_id is None: self.after_id = self.after(700, self._scroll)
-
-    def _scroll(self) -> None:
-        self.after_id = None
-        try:
-            if not self.winfo_exists() or not self.scrolling: return
-            x, y = self.coords(self.item)
-            x -= 1
-            if x + self.text_width < 0: x = self.winfo_width() + 12
-            self.coords(self.item, x, y)
-            self.after_id = self.after(35, self._scroll)
-        except tk.TclError:
-            return
-
 
 class AutoChzzkApp:
     BG, SURFACE, INPUT = "#16171D", "#22242C", "#2C2F38"
@@ -316,7 +78,7 @@ class AutoChzzkApp:
         self.active_dialog = None
         self.extension_setup_prompted = False
         self.extension_connection_deadline = time.monotonic() + EXTENSION_CONNECTION_GRACE_SECONDS
-        self.extension_server = start_extension_server()
+        self.extension_server = start_extension_server(lambda: self._ui(self._restore_window))
         self.window_icon = None
         self.header_icon = None
         self._load_brand_icons()
@@ -326,8 +88,6 @@ class AutoChzzkApp:
         self._configure_styles()
         self._build_ui()
         self._start_tray_icon()
-        global APP_INSTANCE
-        APP_INSTANCE = self
         self._refresh_list()
         root.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
         root.after(500, self._check_extension_connection)
@@ -426,23 +186,10 @@ class AutoChzzkApp:
         self.canvas.bind("<Configure>", lambda event: self.canvas.itemconfigure(self.list_window, width=event.width))
 
     def _load_channels(self) -> list[dict]:
-        try:
-            loaded = json.loads(DATA_PATH.read_text(encoding="utf-8"))
-            channels = []
-            for item in loaded:
-                if not isinstance(item, dict) or not CHANNEL_ID_PATTERN.fullmatch(item.get("id", "")): continue
-                try: item["interval"] = max(15, int(item.get("interval", 60)))
-                except (TypeError, ValueError): item["interval"] = 60
-                channels.append(item)
-            return channels
-        except (FileNotFoundError, json.JSONDecodeError): return []
+        return load_channels()
 
     def _load_settings(self) -> dict:
-        try:
-            loaded = json.loads(SETTINGS_PATH.read_text(encoding="utf-8"))
-            return loaded if isinstance(loaded, dict) else {}
-        except (FileNotFoundError, json.JSONDecodeError):
-            return {}
+        return load_settings()
 
     def _scan_chrome_profiles(self) -> None:
         """Read Chrome's profile list on every app launch."""
@@ -489,7 +236,7 @@ class AutoChzzkApp:
         self.root.after(5_000, self._check_selected_profile_exists)
 
     def _save_settings(self) -> None:
-        SETTINGS_PATH.write_text(json.dumps(self.settings, ensure_ascii=False, indent=2), encoding="utf-8")
+        save_settings(self.settings)
 
     def _apply_selected_profile(self) -> None:
         profile_keys = set()
@@ -581,7 +328,7 @@ class AutoChzzkApp:
         self.root.after(1_000, self._check_extension_connection)
 
     def _save_channels(self) -> None:
-        DATA_PATH.write_text(json.dumps(self.channels, ensure_ascii=False, indent=2), encoding="utf-8")
+        save_channels(self.channels)
 
     def _show_app_dialog(self, title: str, message: str, confirm_text: str = "확인", confirm_command=None, cancel_text: str | None = None, cancel_command=None) -> None:
         """Show an app-styled modal instead of a Windows system dialog."""
@@ -878,15 +625,15 @@ class AutoChzzkApp:
     def _restore_window(self) -> None: self.root.deiconify(); self.root.lift(); self.root.focus_force()
     def quit_from_tray(self, _icon=None, _item=None) -> None: self.root.after(0, self.on_close)
     def on_close(self) -> None:
-        global APP_INSTANCE
         self.stop_event.set()
         if self.extension_server is not None: self.extension_server.shutdown(); self.extension_server.server_close()
+        clear_show_window_callback()
         if self.tray_icon is not None: self.tray_icon.stop()
-        APP_INSTANCE = None
         self.root.destroy()
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Start the desktop application, keeping only one Windows instance active."""
     # Keep one monitoring process only. A second launch quietly exits.
     mutex = None
     if sys.platform == "win32":
@@ -900,5 +647,11 @@ if __name__ == "__main__":
                 urllib.request.urlopen(request, timeout=1).close()
             except urllib.error.URLError:
                 pass
-            sys.exit(0)
-    root = tk.Tk(); AutoChzzkApp(root); root.mainloop()
+            return
+    root = tk.Tk()
+    AutoChzzkApp(root)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
