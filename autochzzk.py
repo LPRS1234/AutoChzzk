@@ -78,6 +78,11 @@ def apply_windows_title_bar(root: tk.Tk, *, background: str, foreground: str) ->
         import ctypes
         from ctypes import wintypes
 
+        get_parent = ctypes.windll.user32.GetParent
+        get_parent.argtypes = [wintypes.HWND]
+        get_parent.restype = wintypes.HWND
+        title_bar_window = get_parent(wintypes.HWND(root.winfo_id())) or wintypes.HWND(root.winfo_id())
+
         def colorref(hex_color: str) -> int:
             red = int(hex_color[1:3], 16)
             green = int(hex_color[3:5], 16)
@@ -87,7 +92,7 @@ def apply_windows_title_bar(root: tk.Tk, *, background: str, foreground: str) ->
         def set_attribute(attribute: int, value: int) -> None:
             data = ctypes.c_int(value)
             ctypes.windll.dwmapi.DwmSetWindowAttribute(
-                wintypes.HWND(root.winfo_id()),
+                title_bar_window,
                 attribute,
                 ctypes.byref(data),
                 ctypes.sizeof(data),
@@ -101,7 +106,7 @@ def apply_windows_title_bar(root: tk.Tk, *, background: str, foreground: str) ->
         set_attribute(35, colorref(background))  # DWMWA_CAPTION_COLOR
         set_attribute(36, colorref(foreground))  # DWMWA_TEXT_COLOR
         ctypes.windll.user32.SetWindowPos(
-            wintypes.HWND(root.winfo_id()), None, 0, 0, 0, 0,
+            title_bar_window, None, 0, 0, 0, 0,
             0x0027,  # SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED
         )
     except (AttributeError, OSError, ValueError):
@@ -333,6 +338,12 @@ class AutoChzzkApp:
         root.geometry("620x650")
         root.minsize(540, 540)
         root.configure(bg=self.BG)
+        self.uses_custom_title_bar = sys.platform == "win32"
+        self.is_maximized = False
+        self.restore_geometry = ""
+        self.drag_offset = (0, 0)
+        if self.uses_custom_title_bar:
+            root.overrideredirect(True)
         self.input_value, self.status_value = tk.StringVar(), tk.StringVar()
         self.extension_status_value = tk.StringVar(value="Chrome 확장 프로그램 연결 확인 중…")
         self.settings = self._load_settings()
@@ -360,11 +371,14 @@ class AutoChzzkApp:
         # for one periodic tab report before opening any startup-detected live.
         self.allow_browser_open_after = time.monotonic() + EXTENSION_INITIAL_SYNC_SECONDS
         self._configure_styles()
+        self._build_window_chrome()
         self._build_ui()
+        self._start_tray_icon()
         global APP_INSTANCE
         APP_INSTANCE = self
         self._refresh_list()
         root.protocol("WM_DELETE_WINDOW", self.hide_to_tray)
+        root.after_idle(self._restore_window)
         root.after(500, self._check_extension_connection)
         root.after(1_000, self._refresh_extension_status)
         root.after(5_000, self._check_selected_profile_exists)
@@ -405,6 +419,76 @@ class AutoChzzkApp:
         self.root.option_add("*TCombobox*Listbox.foreground", self.TEXT)
         self.root.option_add("*TCombobox*Listbox.selectBackground", self.ACCENT)
         self.root.option_add("*TCombobox*Listbox.selectForeground", "#08251D")
+
+    def _build_window_chrome(self) -> None:
+        """Draw a reliable dark title bar when Windows won't theme Tk's native one."""
+        if not self.uses_custom_title_bar:
+            return
+        bar = tk.Frame(self.root, bg=self.SURFACE, height=34)
+        bar.pack(fill="x", side="top")
+        bar.pack_propagate(False)
+        drag_targets = [bar]
+        if self.header_icon is not None:
+            icon = tk.Label(bar, image=self.header_icon, bg=self.SURFACE)
+            icon.pack(side="left", padx=(9, 6))
+            drag_targets.append(icon)
+        title = tk.Label(bar, text=APP_NAME, fg=self.TEXT, bg=self.SURFACE, font=("Segoe UI", 9))
+        title.pack(side="left")
+        drag_targets.append(title)
+        for widget in drag_targets:
+            widget.bind("<ButtonPress-1>", self._start_window_drag)
+            widget.bind("<B1-Motion>", self._drag_window)
+            widget.bind("<Double-Button-1>", self._toggle_maximize)
+
+        self._chrome_button(bar, "close", self.hide_to_tray, active_bg="#C42B3B").pack(side="right", fill="y")
+        self._chrome_button(bar, "maximize", self._toggle_maximize).pack(side="right", fill="y")
+        self._chrome_button(bar, "minimize", self._minimize_window).pack(side="right", fill="y")
+
+    def _chrome_button(self, parent, kind: str, command, *, active_bg: str = "#50545F") -> tk.Canvas:
+        button = tk.Canvas(parent, width=46, height=34, bg=self.SURFACE, highlightthickness=0, bd=0, cursor="hand2")
+
+        def draw(active: bool = False) -> None:
+            button.delete("icon")
+            background = active_bg if active else self.SURFACE
+            button.configure(bg=background)
+            color = self.TEXT
+            width, height = max(button.winfo_width(), 46), max(button.winfo_height(), 34)
+            center_x, center_y = width // 2, height // 2
+            if kind == "minimize":
+                button.create_line(center_x - 6, center_y + 5, center_x + 6, center_y + 5, fill=color, width=1, tags="icon")
+            elif kind == "maximize":
+                button.create_rectangle(center_x - 5, center_y - 5, center_x + 5, center_y + 5, outline=color, width=1, tags="icon")
+            else:
+                button.create_line(center_x - 5, center_y - 5, center_x + 5, center_y + 5, fill=color, width=1, tags="icon")
+                button.create_line(center_x + 5, center_y - 5, center_x - 5, center_y + 5, fill=color, width=1, tags="icon")
+
+        button.bind("<Button-1>", lambda _event: command())
+        button.bind("<Enter>", lambda _event: draw(True))
+        button.bind("<Leave>", lambda _event: draw(False))
+        button.bind("<Configure>", lambda _event: draw())
+        draw()
+        return button
+
+    def _start_window_drag(self, event) -> None:
+        if not self.is_maximized:
+            self.drag_offset = (event.x_root - self.root.winfo_x(), event.y_root - self.root.winfo_y())
+
+    def _drag_window(self, event) -> None:
+        if not self.is_maximized:
+            self.root.geometry(f"+{event.x_root - self.drag_offset[0]}+{event.y_root - self.drag_offset[1]}")
+
+    def _minimize_window(self) -> None:
+        self.root.overrideredirect(False)
+        self.root.iconify()
+
+    def _toggle_maximize(self, _event=None) -> None:
+        if self.is_maximized:
+            self.root.state("normal")
+            self.root.geometry(self.restore_geometry)
+        else:
+            self.restore_geometry = self.root.geometry()
+            self.root.state("zoomed")
+        self.is_maximized = not self.is_maximized
 
     def _build_ui(self) -> None:
         outer = tk.Frame(self.root, bg=self.BG, padx=30, pady=24); outer.pack(fill="both", expand=True)
@@ -887,13 +971,25 @@ class AutoChzzkApp:
             image = Image.new("RGBA", (64, 64), self.BG); draw = ImageDraw.Draw(image); draw.ellipse((8, 8, 56, 56), fill=self.ACCENT); draw.polygon(((27, 22), (27, 42), (44, 32)), fill=self.BG)
         return pystray.Icon("AutoChzzk", image, APP_NAME, menu=pystray.Menu(pystray.MenuItem("창 열기", self.show_window, default=True), pystray.MenuItem("종료", self.quit_from_tray)))
 
+    def _start_tray_icon(self) -> None:
+        if pystray is None or self.tray_icon is not None:
+            return
+        self.tray_icon = self._create_tray_icon()
+        if self.tray_icon is not None:
+            threading.Thread(target=self.tray_icon.run, daemon=True).start()
+
     def hide_to_tray(self) -> None:
         if pystray is None: messagebox.showwarning(APP_NAME, "트레이 기능에 필요한 패키지가 없습니다. `python -m pip install -r requirements.txt`를 실행해 주세요."); return
         self.root.withdraw()
-        if self.tray_icon is None: self.tray_icon = self._create_tray_icon(); threading.Thread(target=self.tray_icon.run, daemon=True).start()
+        self._start_tray_icon()
 
     def show_window(self, _icon=None, _item=None) -> None: self.root.after(0, self._restore_window)
-    def _restore_window(self) -> None: self.root.deiconify(); self.root.lift(); self.root.focus_force()
+    def _restore_window(self) -> None:
+        self.root.deiconify()
+        if self.uses_custom_title_bar:
+            self.root.after_idle(lambda: self.root.overrideredirect(True))
+        self.root.lift()
+        self.root.focus_force()
     def quit_from_tray(self, _icon=None, _item=None) -> None: self.root.after(0, self.on_close)
     def on_close(self) -> None:
         global APP_INSTANCE
