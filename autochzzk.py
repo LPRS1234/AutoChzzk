@@ -46,6 +46,7 @@ from autochzzk_core.updater import (
     UpdateInfo,
     download_update,
     find_available_update,
+    get_release_version,
     launch_installer,
     verify_installer,
 )
@@ -68,6 +69,7 @@ class AutoChzzkApp:
         root.minsize(540, 540)
         root.configure(bg=self.BG)
         self.input_value, self.status_value = tk.StringVar(), tk.StringVar()
+        self.version_value = tk.StringVar(value=f"현재 버전 {APP_VERSION} · 최신 버전 확인 중…")
         self.extension_status_value = tk.StringVar(value="Chrome 확장 프로그램 연결 확인 중…")
         self.settings = self._load_settings()
         self._scan_chrome_profiles()
@@ -181,12 +183,22 @@ class AutoChzzkApp:
         tk.Label(add_card, text="치지직 채널 URL 또는 32자리 채널 ID", fg=self.MUTED, bg=self.SURFACE, font=("Malgun Gothic", 8)).pack(anchor="w", pady=(5, 0))
         controls = tk.Frame(outer, bg=self.BG); controls.pack(fill="x", pady=(0, 7))
         self.count_label = tk.Label(controls, fg=self.TEXT, bg=self.BG, font=("Malgun Gothic", 10, "bold")); self.count_label.pack(side="left")
-        status = tk.Frame(outer, bg="#1D2C29", padx=13, pady=9)
-        status.pack(fill="x", pady=(13, 0), side="bottom")
+        footer = tk.Frame(outer, bg=self.BG)
+        footer.pack(fill="x", pady=(13, 0), side="bottom")
+        status = tk.Frame(footer, bg="#1D2C29", padx=13, pady=9)
+        status.pack(fill="x")
         self.status_dot = tk.Canvas(status, width=10, height=10, bg="#1D2C29", highlightthickness=0)
         self.status_dot_item = self.status_dot.create_oval(3, 3, 7, 7, fill=self.ACCENT, outline="")
         self.status_dot.pack(side="left", padx=(0, 7))
         tk.Label(status, textvariable=self.status_value, fg=self.TEXT, bg="#1D2C29", font=("Malgun Gothic", 9), anchor="w").pack(side="left", fill="x", expand=True)
+        tk.Label(
+            footer,
+            textvariable=self.version_value,
+            fg=self.MUTED,
+            bg=self.BG,
+            font=("Malgun Gothic", 7),
+            anchor="e",
+        ).pack(fill="x", pady=(5, 0))
         list_box = tk.Frame(outer, bg=self.SURFACE); list_box.pack(fill="both", expand=True)
         self.canvas = tk.Canvas(list_box, bg=self.SURFACE, highlightthickness=0, height=255)
         scrollbar = ttk.Scrollbar(list_box, orient="vertical", command=self.canvas.yview, style="Dark.Vertical.TScrollbar")
@@ -294,13 +306,21 @@ class AutoChzzkApp:
     def _check_for_update(self) -> None:
         """Check published GitHub Releases without delaying app monitoring."""
         try:
-            update_info = find_available_update(get_latest_release())
+            release = get_latest_release()
+            latest_version = get_release_version(release)
+            self._ui(self._set_latest_version, latest_version)
+            update_info = find_available_update(release)
             if update_info is None or self.update_prompted_version == update_info.version:
                 return
             self._ui(self._start_update_download, update_info)
         except (UpdateError, urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError, TimeoutError, OSError):
             # An update check must never interrupt normal channel monitoring.
+            self._ui(self._set_latest_version, None)
             return
+
+    def _set_latest_version(self, version: str | None) -> None:
+        latest_text = version if version is not None else "확인 실패"
+        self.version_value.set(f"현재 버전 {APP_VERSION} · 최신 버전 {latest_text}")
 
     def _start_update_download(self, update_info: UpdateInfo) -> None:
         if self.stop_event.is_set() or self.update_download_in_progress:

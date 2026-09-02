@@ -16,6 +16,7 @@ from autochzzk_core.updater import (
     UpdateMetadataError,
     download_update,
     find_available_update,
+    get_release_version,
     launch_installer,
     verify_installer,
 )
@@ -45,6 +46,13 @@ def release_for(version: str, content: bytes) -> dict:
 
 
 class UpdateMetadataTests(unittest.TestCase):
+    def test_release_version_accepts_optional_v_prefix(self) -> None:
+        self.assertEqual(get_release_version({"tag_name": "v1.2.2"}), "1.2.2")
+
+    def test_invalid_release_version_is_rejected(self) -> None:
+        with self.assertRaises(UpdateMetadataError):
+            get_release_version({"tag_name": "latest"})
+
     def test_same_version_has_no_update(self) -> None:
         self.assertIsNone(find_available_update(release_for("1.2.1", b"setup"), "1.2.1"))
 

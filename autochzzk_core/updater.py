@@ -49,14 +49,18 @@ class UpdateInfo:
     size: int
 
 
-def find_available_update(release: dict, current_version: str = APP_VERSION) -> UpdateInfo | None:
-    """Return a verified installer description for a newer GitHub Release."""
+def get_release_version(release: dict) -> str:
+    """Return the normalized version number from a GitHub Release tag."""
     tag_name = str(release.get("tag_name") or "").strip()
     version_match = VERSION_PATTERN.fullmatch(tag_name)
     if version_match is None:
         raise UpdateMetadataError("업데이트 버전 형식이 올바르지 않습니다.")
+    return version_match.group(1)
 
-    version = version_match.group(1)
+
+def find_available_update(release: dict, current_version: str = APP_VERSION) -> UpdateInfo | None:
+    """Return a verified installer description for a newer GitHub Release."""
+    version = get_release_version(release)
     if version_key(version) <= version_key(current_version):
         return None
 
