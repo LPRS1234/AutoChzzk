@@ -1,7 +1,15 @@
 #define MyAppName "AutoChzzk"
-#define MyAppVersion "1.2.2"
+#define MyAppVersion "1.2.3"
 #define MyAppPublisher "LPRS1234"
 #define MyAppExeName "AutoChzzk.exe"
+
+#ifndef MyBuildDir
+  #define MyBuildDir "..\dist\AutoChzzk"
+#endif
+
+#ifndef MyOutputDir
+  #define MyOutputDir "..\release"
+#endif
 
 [Setup]
 AppId={{9B7E3FE4-A937-4DAD-A0B5-4330AE0885BA}
@@ -11,7 +19,7 @@ AppPublisher={#MyAppPublisher}
 DefaultDirName={autopf}\{#MyAppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=admin
-OutputDir=..\release
+OutputDir={#MyOutputDir}
 OutputBaseFilename=AutoChzzk-Setup-{#MyAppVersion}
 SetupIconFile=..\assets\logo\app-icon.ico
 Compression=lzma2
@@ -24,7 +32,7 @@ UninstallDisplayIcon={app}\{#MyAppExeName}
 Name: "korean"; MessagesFile: "compiler:Languages\Korean.isl"
 
 [Files]
-Source: "..\dist\AutoChzzk\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#MyBuildDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\chrome_extension\*"; DestDir: "{app}\chrome_extension"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 
