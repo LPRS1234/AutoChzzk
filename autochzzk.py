@@ -26,6 +26,7 @@ from autochzzk_core.config import (
     APP_VERSION,
     EXTENSION_CONNECTION_GRACE_SECONDS,
     EXTENSION_INITIAL_SYNC_SECONDS,
+    EXTENSION_LAUNCH_CONNECTION_GRACE_SECONDS,
     EXTENSION_PORT,
     ICO_PATH,
     LIVE_URL,
@@ -92,6 +93,7 @@ class AutoChzzkApp:
         self.update_download_in_progress = False
         self.update_prompted_version: str | None = None
         self.extension_setup_prompted = False
+        self.extension_connected = False
         self.extension_connection_deadline = time.monotonic() + EXTENSION_CONNECTION_GRACE_SECONDS
         self.extension_server = start_extension_server(lambda: self._ui(self._restore_window))
         self.window_icon = None
@@ -290,9 +292,10 @@ class AutoChzzkApp:
             profile_keys.add(f"email:{self.selected_chrome_profile['email'].lower()}")
         CHROME_TABS.set_selected_profile(profile_keys)
 
-    def _reset_extension_connection_check(self) -> None:
+    def _reset_extension_connection_check(self, grace_seconds: int = EXTENSION_CONNECTION_GRACE_SECONDS) -> None:
         self.extension_setup_prompted = False
-        self.extension_connection_deadline = time.monotonic() + EXTENSION_CONNECTION_GRACE_SECONDS
+        self.extension_connected = False
+        self.extension_connection_deadline = time.monotonic() + grace_seconds
 
     def _set_extension_status(self, message: str, connected: bool | None = None) -> None:
         self.extension_status_value.set(message)
@@ -426,7 +429,12 @@ class AutoChzzkApp:
             return
         if CHROME_TABS.is_connected():
             self._set_extension_status("Chrome 확장 프로그램 연결됨", True)
+            if not self.extension_connected:
+                self.extension_connected = True
+                if self.extension_setup_prompted:
+                    threading.Thread(target=self._open_current_lives_after_extension_connect, daemon=True).start()
         else:
+            self.extension_connected = False
             self._set_extension_status("Chrome 확장 프로그램 연결 안 됨", False)
         self._update_monitor_status()
         self.root.after(2_000, self._refresh_extension_status)
@@ -507,13 +515,16 @@ class AutoChzzkApp:
         dialog.grab_set()
         dialog.focus_set()
 
-    def _open_chrome_extensions(self) -> None:
+    def _find_chrome_path(self) -> Path | None:
         chrome_paths = [
             Path(os.environ.get("PROGRAMFILES", "")) / "Google" / "Chrome" / "Application" / "chrome.exe",
             Path(os.environ.get("PROGRAMFILES(X86)", "")) / "Google" / "Chrome" / "Application" / "chrome.exe",
             Path(os.environ.get("LOCALAPPDATA", "")) / "Google" / "Chrome" / "Application" / "chrome.exe",
         ]
-        chrome_path = next((path for path in chrome_paths if path.is_file()), None)
+        return next((path for path in chrome_paths if path.is_file()), None)
+
+    def _open_chrome_extensions(self) -> None:
+        chrome_path = self._find_chrome_path()
         if chrome_path is not None:
             subprocess.Popen(
                 [str(chrome_path), f"--profile-directory={self.selected_chrome_profile['directory']}", "chrome://extensions/"],
@@ -521,6 +532,20 @@ class AutoChzzkApp:
             )
         else:
             webbrowser.open("chrome://extensions", new=1)
+
+    def _launch_selected_chrome(self) -> bool:
+        """Start the selected profile so its extension can receive open commands."""
+        chrome_path = self._find_chrome_path()
+        if chrome_path is None:
+            return False
+        try:
+            subprocess.Popen(
+                [str(chrome_path), f"--profile-directory={self.selected_chrome_profile['directory']}"],
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except OSError:
+            return False
+        return True
 
     def show_extension_install_guide(self) -> None:
         self._show_app_dialog(
@@ -536,6 +561,7 @@ class AutoChzzkApp:
             return
         if CHROME_TABS.is_connected():
             self._set_extension_status("Chrome 확장 프로그램 연결됨", True)
+            self.extension_connected = True
             self._hide_status()
             if not self.extension_setup_prompted:
                 self.extension_setup_prompted = True
@@ -734,6 +760,12 @@ class AutoChzzkApp:
             command_id = CHROME_TABS.queue_background_open(live_url)
             self._set_status(f"방송 시작 감지: {channel.get('name', channel['id'])} · Chrome 백그라운드 탭으로 여는 중")
             self.root.after(6_000, lambda: self._fallback_open(command_id, channel))
+            return
+        if self._launch_selected_chrome():
+            self._reset_extension_connection_check(EXTENSION_LAUNCH_CONNECTION_GRACE_SECONDS)
+            self._set_extension_status("Chrome 시작 후 확장 프로그램 연결 확인 중…")
+            self._set_status("Chrome을 열어 확장 프로그램 연결을 기다리는 중입니다…")
+            self.root.after(500, self._check_extension_connection)
             return
         self._set_status("Chrome 확장 프로그램이 연결되지 않아 방송을 자동으로 열지 않았습니다.", True)
 
