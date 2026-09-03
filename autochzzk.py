@@ -69,6 +69,7 @@ class AutoChzzkApp:
         root.minsize(540, 540)
         root.configure(bg=self.BG)
         self.input_value, self.status_value = tk.StringVar(), tk.StringVar()
+        self.status_clear_token = 0
         self.version_value = tk.StringVar(value=f"현재 버전 {APP_VERSION} · 최신 버전 확인 중…")
         self.extension_status_value = tk.StringVar(value="Chrome 확장 프로그램 연결 확인 중…")
         self.settings = self._load_settings()
@@ -80,6 +81,7 @@ class AutoChzzkApp:
         self._save_channels()
         self.was_live: dict[str, bool] = {}
         self.live_info: dict[str, tuple[bool, str]] = {}
+        self.watching_indicators: dict[str, tk.Label] = {}
         self.editing_channel_id: str | None = None
         # Delay the normal polling loop while the startup check runs, so every
         # enabled saved channel is checked exactly once as soon as the app opens.
@@ -185,20 +187,20 @@ class AutoChzzkApp:
         self.count_label = tk.Label(controls, fg=self.TEXT, bg=self.BG, font=("Malgun Gothic", 10, "bold")); self.count_label.pack(side="left")
         footer = tk.Frame(outer, bg=self.BG)
         footer.pack(fill="x", pady=(13, 0), side="bottom")
-        status = tk.Frame(footer, bg="#1D2C29", padx=13, pady=9)
-        status.pack(fill="x")
-        self.status_dot = tk.Canvas(status, width=10, height=10, bg="#1D2C29", highlightthickness=0)
+        self.status_frame = tk.Frame(footer, bg="#1D2C29", padx=13, pady=9)
+        self.status_dot = tk.Canvas(self.status_frame, width=10, height=10, bg="#1D2C29", highlightthickness=0)
         self.status_dot_item = self.status_dot.create_oval(3, 3, 7, 7, fill=self.ACCENT, outline="")
         self.status_dot.pack(side="left", padx=(0, 7))
-        tk.Label(status, textvariable=self.status_value, fg=self.TEXT, bg="#1D2C29", font=("Malgun Gothic", 9), anchor="w").pack(side="left", fill="x", expand=True)
-        tk.Label(
+        tk.Label(self.status_frame, textvariable=self.status_value, fg=self.TEXT, bg="#1D2C29", font=("Malgun Gothic", 9), anchor="w").pack(side="left", fill="x", expand=True)
+        self.version_label = tk.Label(
             footer,
             textvariable=self.version_value,
             fg=self.MUTED,
             bg=self.BG,
             font=("Malgun Gothic", 7),
             anchor="e",
-        ).pack(fill="x", pady=(5, 0))
+        )
+        self.version_label.pack(fill="x", pady=(5, 0))
         list_box = tk.Frame(outer, bg=self.SURFACE); list_box.pack(fill="both", expand=True)
         self.canvas = tk.Canvas(list_box, bg=self.SURFACE, highlightthickness=0, height=255)
         scrollbar = ttk.Scrollbar(list_box, orient="vertical", command=self.canvas.yview, style="Dark.Vertical.TScrollbar")
@@ -534,6 +536,7 @@ class AutoChzzkApp:
             return
         if CHROME_TABS.is_connected():
             self._set_extension_status("Chrome 확장 프로그램 연결됨", True)
+            self._hide_status()
             if not self.extension_setup_prompted:
                 self.extension_setup_prompted = True
                 threading.Thread(target=self._open_current_lives_after_extension_connect, daemon=True).start()
@@ -542,10 +545,12 @@ class AutoChzzkApp:
             return
         if time.monotonic() < self.extension_connection_deadline:
             self._set_extension_status("Chrome 확장 프로그램 연결 확인 중…")
+            self._set_status("Chrome 확장 프로그램 연결을 확인하는 중입니다…")
             self.root.after(500, self._check_extension_connection)
             return
         self._set_extension_status("Chrome 확장 프로그램 연결 안 됨", False)
         self.extension_setup_prompted = True
+        self._set_status("Chrome 확장 프로그램 연결을 확인하지 못했습니다.", True)
         self.show_extension_install_guide()
 
     def _open_current_lives_after_extension_connect(self) -> None:
@@ -578,6 +583,7 @@ class AutoChzzkApp:
 
     def _refresh_list(self) -> None:
         for child in self.list_frame.winfo_children(): child.destroy()
+        self.watching_indicators: dict[str, tk.Label] = {}
         enabled_count = sum(bool(channel.get("enabled")) for channel in self.channels)
         self.count_label.configure(text=f"등록 채널 {len(self.channels)}개 · 감지 중 {enabled_count}개")
         if not self.channels: tk.Label(self.list_frame, text="아직 등록된 채널이 없습니다.", fg=self.MUTED, bg=self.SURFACE, font=("Malgun Gothic", 10), pady=28).pack()
@@ -587,17 +593,16 @@ class AutoChzzkApp:
         self._update_monitor_status()
 
     def _update_monitor_status(self) -> None:
-        if not self.channels:
-            self._set_status("감지할 채널을 등록하세요.")
-            return
-        watching_count = sum(CHROME_TABS.is_watched(channel["id"]) for channel in self.channels)
-        live_count = sum(bool(self.live_info.get(channel["id"], (False, ""))[0]) for channel in self.channels)
-        if watching_count:
-            self._set_status(f"{watching_count}개의 방송을 시청 중")
-        elif live_count:
-            self._set_status(f"현재 방송 중인 등록 채널이 {live_count}개 있습니다.")
-        else:
-            self._set_status("현재 방송 중인 등록 채널이 없습니다.")
+        """Refresh the watching indicators without showing an idle footer message."""
+        self._refresh_watching_indicators()
+
+    def _refresh_watching_indicators(self) -> None:
+        for channel_id, indicator in self.watching_indicators.items():
+            if indicator.winfo_exists():
+                indicator.configure(
+                    text="●" if CHROME_TABS.is_watched(channel_id) else "",
+                    fg=self.DANGER,
+                )
 
     def _make_channel_row(self, channel: dict) -> None:
         row = tk.Frame(self.list_frame, bg=self.INPUT, padx=12, pady=9); row.pack(fill="x", pady=4)
@@ -610,7 +615,12 @@ class AutoChzzkApp:
         ttk.Button(actions, text="간격 수정", style="Small.TButton", command=lambda value=channel["id"]: self.show_interval_editor(value), cursor="hand2").pack(side="right", padx=(0, 8))
         details = tk.Frame(row, bg=self.INPUT)
         details.pack(side="left", fill="both", expand=True, padx=(0, 10))
-        MarqueeText(details, channel.get("name") or channel["id"], fg=self.TEXT, bg=self.INPUT, font=("Malgun Gothic", 10, "bold")).pack(fill="x")
+        name_row = tk.Frame(details, bg=self.INPUT)
+        name_row.pack(fill="x")
+        watching_indicator = tk.Label(name_row, bg=self.INPUT, font=("Segoe UI", 8), width=1)
+        watching_indicator.pack(side="left", padx=(0, 4))
+        self.watching_indicators[channel["id"]] = watching_indicator
+        MarqueeText(name_row, channel.get("name") or channel["id"], fg=self.TEXT, bg=self.INPUT, font=("Malgun Gothic", 10, "bold")).pack(side="left", fill="x", expand=True)
         live_state = self.live_info.get(channel["id"])
         if live_state is None:
             live_text, live_color = "방송 상태 확인 중…", self.MUTED
@@ -733,9 +743,26 @@ class AutoChzzkApp:
         CHROME_TABS.discard_command(command_id)
         self._set_status(f"{channel.get('name', channel['id'])} 방송 감지 · Chrome 확장 프로그램이 탭 열기를 확인하지 못해 자동으로 열지 않았습니다.", True)
 
-    def _set_status(self, message: str, is_error: bool = False) -> None:
+    def _set_status(self, message: str, is_error: bool = False, clear_after: int = 5_000) -> None:
+        """Show a temporary footer message while the app is doing work."""
+        self.status_clear_token += 1
+        clear_token = self.status_clear_token
         self.status_value.set(message)
         self.status_dot.itemconfigure(self.status_dot_item, fill=self.DANGER if is_error else self.ACCENT)
+        if not self.status_frame.winfo_ismapped():
+            self.status_frame.pack(fill="x", before=self.version_label)
+        if clear_after > 0:
+            self.root.after(clear_after, lambda: self._clear_status(clear_token))
+
+    def _clear_status(self, clear_token: int) -> None:
+        if clear_token != self.status_clear_token:
+            return
+        self._hide_status()
+
+    def _hide_status(self) -> None:
+        self.status_clear_token += 1
+        self.status_value.set("")
+        self.status_frame.pack_forget()
 
     def _ui(self, callback, *args) -> None: self.root.after(0, callback, *args)
 
