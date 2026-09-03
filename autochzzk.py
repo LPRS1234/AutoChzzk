@@ -547,6 +547,20 @@ class AutoChzzkApp:
             return False
         return True
 
+    def _is_chrome_running(self) -> bool:
+        """Return whether any Chrome process is running without showing a console window."""
+        try:
+            result = subprocess.run(
+                ["tasklist", "/FI", "IMAGENAME eq chrome.exe", "/FO", "CSV", "/NH"],
+                capture_output=True,
+                text=True,
+                timeout=3,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return "chrome.exe" in result.stdout.lower()
+
     def show_extension_install_guide(self) -> None:
         self._show_app_dialog(
             "Chrome 확장 프로그램 설치 안내",
@@ -576,8 +590,11 @@ class AutoChzzkApp:
             return
         self._set_extension_status("Chrome 확장 프로그램 연결 안 됨", False)
         self.extension_setup_prompted = True
-        self._set_status("Chrome 확장 프로그램 연결을 확인하지 못했습니다.", True)
-        self.show_extension_install_guide()
+        if self._is_chrome_running():
+            self._set_status("Chrome 확장 프로그램 연결을 확인하지 못했습니다.", True)
+            self.show_extension_install_guide()
+        else:
+            self._set_status("Chrome이 실행되지 않아 확장 프로그램 연결을 기다리지 않습니다.")
 
     def _open_current_lives_after_extension_connect(self) -> None:
         """Open broadcasts that were already live while the extension was disconnected."""
