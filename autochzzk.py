@@ -15,6 +15,7 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 
 from autochzzk_core.chrome_profiles import get_chrome_profiles
+from autochzzk_core.changelog import RELEASE_NOTES
 from autochzzk_core.chzzk_api import (
     extract_channel_id,
     get_channel_name,
@@ -90,6 +91,7 @@ class AutoChzzkApp:
         self.stop_event = threading.Event()
         self.tray_icon = None
         self.active_dialog = None
+        self.changelog_dialog = None
         self.update_download_in_progress = False
         self.update_prompted_version: str | None = None
         self.extension_setup_prompted = False
@@ -194,15 +196,24 @@ class AutoChzzkApp:
         self.status_dot_item = self.status_dot.create_oval(3, 3, 7, 7, fill=self.ACCENT, outline="")
         self.status_dot.pack(side="left", padx=(0, 7))
         tk.Label(self.status_frame, textvariable=self.status_value, fg=self.TEXT, bg="#1D2C29", font=("Malgun Gothic", 9), anchor="w").pack(side="left", fill="x", expand=True)
+        self.version_row = tk.Frame(footer, bg=self.BG)
+        self.version_row.pack(fill="x", pady=(5, 0))
+        ttk.Button(
+            self.version_row,
+            text="업데이트 내역",
+            style="Small.TButton",
+            command=self.show_changelog,
+            cursor="hand2",
+        ).pack(side="left")
         self.version_label = tk.Label(
-            footer,
+            self.version_row,
             textvariable=self.version_value,
             fg=self.MUTED,
             bg=self.BG,
             font=("Malgun Gothic", 7),
             anchor="e",
         )
-        self.version_label.pack(fill="x", pady=(5, 0))
+        self.version_label.pack(side="right")
         list_box = tk.Frame(outer, bg=self.SURFACE); list_box.pack(fill="both", expand=True)
         self.canvas = tk.Canvas(list_box, bg=self.SURFACE, highlightthickness=0, height=255)
         scrollbar = ttk.Scrollbar(list_box, orient="vertical", command=self.canvas.yview, style="Dark.Vertical.TScrollbar")
@@ -570,6 +581,68 @@ class AutoChzzkApp:
             "확인했습니다",
         )
 
+    def show_changelog(self) -> None:
+        if self.changelog_dialog is not None and self.changelog_dialog.winfo_exists():
+            self.changelog_dialog.lift()
+            self.changelog_dialog.focus_set()
+            return
+
+        dialog = tk.Toplevel(self.root, bg=self.SURFACE)
+        self.changelog_dialog = dialog
+        dialog.title("업데이트 내역")
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+
+        card = tk.Frame(dialog, bg=self.SURFACE, padx=22, pady=20)
+        card.pack(fill="both", expand=True)
+        tk.Label(card, text="업데이트 내역", fg=self.TEXT, bg=self.SURFACE, font=("Malgun Gothic", 13, "bold")).pack(anchor="w")
+        tk.Label(card, text="배포된 버전의 주요 변경 사항입니다.", fg=self.MUTED, bg=self.SURFACE, font=("Malgun Gothic", 8)).pack(anchor="w", pady=(3, 12))
+
+        content_frame = tk.Frame(card, bg=self.INPUT)
+        content_frame.pack(fill="both", expand=True)
+        scrollbar = ttk.Scrollbar(content_frame, orient="vertical", style="Dark.Vertical.TScrollbar")
+        notes = tk.Text(
+            content_frame,
+            bg=self.INPUT,
+            fg=self.TEXT,
+            insertbackground=self.TEXT,
+            relief="flat",
+            bd=0,
+            wrap="word",
+            font=("Malgun Gothic", 9),
+            padx=14,
+            pady=12,
+            height=20,
+            yscrollcommand=scrollbar.set,
+        )
+        scrollbar.configure(command=notes.yview)
+        scrollbar.pack(side="right", fill="y")
+        notes.pack(side="left", fill="both", expand=True)
+        notes.tag_configure("version", foreground=self.ACCENT, font=("Malgun Gothic", 10, "bold"), spacing1=4)
+        notes.tag_configure("item", foreground=self.TEXT, spacing1=3)
+        for version, entries in RELEASE_NOTES:
+            notes.insert("end", f"{version}\n", "version")
+            for entry in entries:
+                notes.insert("end", f"• {entry}\n", "item")
+            notes.insert("end", "\n")
+        notes.configure(state="disabled")
+
+        def close() -> None:
+            if dialog.winfo_exists():
+                dialog.destroy()
+            self.changelog_dialog = None
+
+        ttk.Button(card, text="닫기", style="DialogAccent.TButton", command=close, cursor="hand2", width=10).pack(anchor="e", pady=(14, 0))
+        dialog.protocol("WM_DELETE_WINDOW", close)
+        dialog.geometry("570x540")
+        dialog.update_idletasks()
+        root_x, root_y = self.root.winfo_rootx(), self.root.winfo_rooty()
+        x = root_x + max(0, (self.root.winfo_width() - dialog.winfo_width()) // 2)
+        y = root_y + max(0, (self.root.winfo_height() - dialog.winfo_height()) // 2)
+        dialog.geometry(f"+{x}+{y}")
+        dialog.grab_set()
+        dialog.focus_set()
+
     def _check_extension_connection(self) -> None:
         if self.stop_event.is_set():
             return
@@ -799,7 +872,7 @@ class AutoChzzkApp:
         self.status_value.set(message)
         self.status_dot.itemconfigure(self.status_dot_item, fill=self.DANGER if is_error else self.ACCENT)
         if not self.status_frame.winfo_ismapped():
-            self.status_frame.pack(fill="x", before=self.version_label)
+            self.status_frame.pack(fill="x", before=self.version_row)
         if clear_after > 0:
             self.root.after(clear_after, lambda: self._clear_status(clear_token))
 
