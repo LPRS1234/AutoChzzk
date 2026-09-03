@@ -31,6 +31,9 @@ UninstallDisplayIcon={app}\{#MyAppExeName}
 [Languages]
 Name: "korean"; MessagesFile: "compiler:Languages\Korean.isl"
 
+[Tasks]
+Name: "startup"; Description: "Windows 시작 시 AutoChzzk 자동 실행"; GroupDescription: "추가 옵션:"; Flags: unchecked
+
 [Files]
 Source: "{#MyBuildDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\chrome_extension\*"; DestDir: "{app}\chrome_extension"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -39,6 +42,9 @@ Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 [Icons]
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"
+
+[Registry]
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "{#MyAppName}"; ValueData: """{app}\{#MyAppExeName}"""; Flags: uninsdeletevalue; Tasks: startup
 
 [Code]
 function PrepareToInstall(var NeedsRestart: Boolean): String;
