@@ -1,7 +1,12 @@
 const LIVE_URL_PATTERN = /^https:\/\/chzzk\.naver\.com\/live\/([0-9a-f]{32})(?:[/?#]|$)/i;
 const ENDPOINT = "http://127.0.0.1:8765/chzzk-tabs";
 const completedCommandIds = new Set();
+const autoPlayTabIds = new Set();
 let reporting = false;
+
+function requestAutoplay(tabId) {
+  chrome.tabs.sendMessage(tabId, { type: "attempt-autoplay" }).catch(() => {});
+}
 
 async function getClientId() {
   const { clientId } = await chrome.storage.local.get("clientId");
@@ -46,7 +51,11 @@ async function executeOpenCommands(commands) {
     const existing = await chrome.tabs.query({ url: [command.url] });
     if (existing.length === 0) {
       // active:false keeps the current app/window in front of Chrome.
-      await chrome.tabs.create({ url: command.url, active: false });
+      const tab = await chrome.tabs.create({ url: command.url, active: false });
+      if (typeof tab.id === "number") {
+        autoPlayTabIds.add(tab.id);
+        requestAutoplay(tab.id);
+      }
     }
     completedCommandIds.add(command.id);
   }
@@ -83,7 +92,13 @@ chrome.runtime.onStartup.addListener(async () => { await ensurePoller(); reportO
 chrome.runtime.onMessage.addListener((message) => {
   if (message?.type === "poll") reportOpenChzzkLives();
 });
-chrome.tabs.onUpdated.addListener(reportOpenChzzkLives);
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  reportOpenChzzkLives();
+  if (autoPlayTabIds.has(tabId) && changeInfo.status === "complete") {
+    autoPlayTabIds.delete(tabId);
+    requestAutoplay(tabId);
+  }
+});
 chrome.tabs.onRemoved.addListener(reportOpenChzzkLives);
 chrome.tabs.onActivated.addListener(reportOpenChzzkLives);
 chrome.windows.onFocusChanged.addListener(reportOpenChzzkLives);
