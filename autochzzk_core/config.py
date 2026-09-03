@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 APP_NAME = "AutoChzzk"
-APP_VERSION = "1.2.3"
+APP_VERSION = "1.3.0"
 UPDATE_API_URL = "https://api.github.com/repos/LPRS1234/AutoChzzk/releases/latest"
 UPDATE_CHECK_INTERVAL_SECONDS = 6 * 60 * 60
 MUTEX_NAME = "Local\\AutoChzzk_SingleInstance_1"
