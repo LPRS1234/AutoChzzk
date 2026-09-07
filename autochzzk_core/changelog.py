@@ -4,6 +4,13 @@ from __future__ import annotations
 
 RELEASE_NOTES: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
+        "v1.5.0",
+        (
+            "방송 종료를 감지하면 AutoChzzk가 자동으로 연 방송 탭을 닫습니다.",
+            "연결된 Chrome 확장 프로그램의 버전을 확인하고, 재설치가 필요하면 앱에서 안내합니다.",
+        ),
+    ),
+    (
         "v1.4.0",
         (
             "방송 감지 시 선택한 Chrome 프로필을 실행하고 확장 프로그램 연결을 다시 확인합니다.",
