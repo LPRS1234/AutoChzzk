@@ -8,6 +8,37 @@ function requestAutoplay(tabId) {
   chrome.tabs.sendMessage(tabId, { type: "attempt-autoplay" }).catch(() => {});
 }
 
+async function getAutoOpenedTabIds() {
+  const { autoOpenedTabIds = [] } = await chrome.storage.session.get("autoOpenedTabIds");
+  return new Set(autoOpenedTabIds.filter(Number.isInteger));
+}
+
+async function rememberAutoOpenedTab(tabId) {
+  const tabIds = await getAutoOpenedTabIds();
+  tabIds.add(tabId);
+  await chrome.storage.session.set({ autoOpenedTabIds: [...tabIds] });
+}
+
+async function forgetAutoOpenedTab(tabId) {
+  const tabIds = await getAutoOpenedTabIds();
+  if (!tabIds.delete(tabId)) return;
+  await chrome.storage.session.set({ autoOpenedTabIds: [...tabIds] });
+}
+
+async function closeAutoOpenedTabs(url) {
+  const [tabs, autoOpenedTabIds] = await Promise.all([
+    chrome.tabs.query({ url: [url] }),
+    getAutoOpenedTabIds(),
+  ]);
+  const tabIds = tabs
+    .map((tab) => tab.id)
+    .filter((tabId) => typeof tabId === "number" && autoOpenedTabIds.has(tabId));
+  if (tabIds.length === 0) return;
+  await chrome.tabs.remove(tabIds);
+  for (const tabId of tabIds) autoOpenedTabIds.delete(tabId);
+  await chrome.storage.session.set({ autoOpenedTabIds: [...autoOpenedTabIds] });
+}
+
 async function getClientId() {
   const { clientId } = await chrome.storage.local.get("clientId");
   if (typeof clientId === "string" && clientId.length >= 8) return clientId;
@@ -48,12 +79,19 @@ async function ensurePoller() {
 async function executeOpenCommands(commands) {
   for (const command of commands) {
     if (!command?.id || !command?.url || completedCommandIds.has(command.id)) continue;
+    if (command.action === "close") {
+      await closeAutoOpenedTabs(command.url);
+      completedCommandIds.add(command.id);
+      continue;
+    }
+    if (command.action !== "open") continue;
     const existing = await chrome.tabs.query({ url: [command.url] });
     if (existing.length === 0) {
       // active:false keeps the current app/window in front of Chrome.
       const tab = await chrome.tabs.create({ url: command.url, active: false });
       if (typeof tab.id === "number") {
         autoPlayTabIds.add(tab.id);
+        await rememberAutoOpenedTab(tab.id);
         requestAutoplay(tab.id);
       }
     }
@@ -99,7 +137,10 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
     requestAutoplay(tabId);
   }
 });
-chrome.tabs.onRemoved.addListener(reportOpenChzzkLives);
+chrome.tabs.onRemoved.addListener((tabId) => {
+  forgetAutoOpenedTab(tabId).catch(() => {});
+  reportOpenChzzkLives();
+});
 chrome.tabs.onActivated.addListener(reportOpenChzzkLives);
 chrome.windows.onFocusChanged.addListener(reportOpenChzzkLives);
 chrome.alarms.onAlarm.addListener((alarm) => { if (alarm.name === "report-open-chzzk-lives") reportOpenChzzkLives(); });

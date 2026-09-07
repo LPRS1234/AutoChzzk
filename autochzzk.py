@@ -828,12 +828,23 @@ class AutoChzzkApp:
         self._ui(self._record_live_status, channel["id"], is_live, title)
         if is_live and not self.was_live.get(channel["id"], False): self.was_live[channel["id"]] = True; self._ui(self._open_live, channel, title)
         elif not is_live:
+            was_live = self.was_live.get(channel["id"], False)
             self.was_live[channel["id"]] = False
+            if was_live:
+                self._ui(self._close_finished_live, channel)
             if added: self._ui(self._set_status, f"{channel.get('name', channel['id'])} 등록 완료 · 현재 오프라인")
 
     def _record_live_status(self, channel_id: str, is_live: bool, title: str) -> None:
         self.live_info[channel_id] = (is_live, title)
         self._refresh_list()
+
+    def _close_finished_live(self, channel: dict) -> None:
+        """Close only tabs that the extension previously opened for this broadcast."""
+        if not CHROME_TABS.is_connected():
+            return
+        command_id = CHROME_TABS.queue_background_close(LIVE_URL.format(channel_id=channel["id"]))
+        if command_id:
+            self._set_status(f"방송 종료 감지: {channel.get('name', channel['id'])} 자동 접속 탭을 닫는 중")
 
     def _open_live(self, channel: dict, title: str) -> None:
         if not any(item["id"] == channel["id"] and item.get("enabled") for item in self.channels): return

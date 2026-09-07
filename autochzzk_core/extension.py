@@ -19,6 +19,7 @@ class ChromeTabState:
         self.selected_profile_keys: set[str] = set()
         self.last_focused_client_id: str | None = None
         self.pending_opens: dict[str, tuple[str, str]] = {}
+        self.pending_closes: dict[str, tuple[str, str]] = {}
         self.lock = threading.Lock()
 
     def _fresh_clients(self) -> dict[str, tuple[set[str], set[str], float]]:
@@ -68,13 +69,34 @@ class ChromeTabState:
             self.pending_opens[command_id] = (url, target_client_id)
         return command_id
 
+    def queue_background_close(self, url: str) -> str:
+        """Ask the selected Chrome profile to close an app-opened broadcast tab."""
+        command_id = uuid.uuid4().hex
+        with self.lock:
+            clients = self._selected_clients()
+            if not clients:
+                return ""
+            target_client_id = (
+                self.last_focused_client_id
+                if self.last_focused_client_id in clients
+                else max(clients, key=lambda client_id: clients[client_id][2])
+            )
+            self.pending_closes[command_id] = (url, target_client_id)
+        return command_id
+
     def pending_commands(self, client_id: str) -> list[dict[str, str]]:
         with self.lock:
-            return [
-                {"id": command_id, "url": url}
+            commands = [
+                {"id": command_id, "action": "open", "url": url}
                 for command_id, (url, target_client_id) in self.pending_opens.items()
                 if target_client_id == client_id
             ]
+            commands.extend(
+                {"id": command_id, "action": "close", "url": url}
+                for command_id, (url, target_client_id) in self.pending_closes.items()
+                if target_client_id == client_id
+            )
+            return commands
 
     def acknowledge_commands(self, client_id: str, command_ids: list[str]) -> None:
         with self.lock:
@@ -82,6 +104,9 @@ class ChromeTabState:
                 command = self.pending_opens.get(command_id)
                 if command is not None and command[1] == client_id:
                     self.pending_opens.pop(command_id, None)
+                command = self.pending_closes.get(command_id)
+                if command is not None and command[1] == client_id:
+                    self.pending_closes.pop(command_id, None)
 
     def is_pending(self, command_id: str) -> bool:
         with self.lock:
