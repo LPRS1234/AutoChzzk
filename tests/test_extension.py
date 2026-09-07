@@ -34,6 +34,29 @@ class ChromeTabStateTests(unittest.TestCase):
 
         self.assertEqual(disconnected.queue_background_close("https://chzzk.naver.com/live/channel"), "")
 
+    def test_old_or_unreported_extension_version_requires_update(self) -> None:
+        self.assertTrue(self.tabs.selected_extension_needs_update("1.0.6"))
+
+        self.tabs.update(
+            "selected-client",
+            set(),
+            {"email:selected@example.com"},
+            focused=True,
+            extension_version="1.0.5",
+        )
+        self.assertTrue(self.tabs.selected_extension_needs_update("1.0.6"))
+
+    def test_current_extension_version_does_not_require_update(self) -> None:
+        self.tabs.update(
+            "selected-client",
+            set(),
+            {"email:selected@example.com"},
+            focused=True,
+            extension_version="1.0.6",
+        )
+
+        self.assertFalse(self.tabs.selected_extension_needs_update("1.0.6"))
+
 
 if __name__ == "__main__":
     unittest.main()

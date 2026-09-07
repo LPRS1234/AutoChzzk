@@ -108,10 +108,11 @@ async function reportOpenChzzkLives() {
       .map((tab) => tab.url?.match(LIVE_URL_PATTERN)?.[1]?.toLowerCase())
       .filter(Boolean);
     const [clientId, focused, profileIdentity] = await Promise.all([getClientId(), isProfileFocused(), getProfileIdentity()]);
+    const extensionVersion = chrome.runtime.getManifest().version;
     const response = await fetch(ENDPOINT, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ clientId, focused, ...profileIdentity, channelIds, completedCommandIds: [...completedCommandIds] }),
+      body: JSON.stringify({ clientId, focused, ...profileIdentity, extensionVersion, channelIds, completedCommandIds: [...completedCommandIds] }),
     });
     if (response.ok) await executeOpenCommands((await response.json()).openCommands || []);
   } catch {

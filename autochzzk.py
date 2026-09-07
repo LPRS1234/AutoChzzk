@@ -33,6 +33,7 @@ from autochzzk_core.config import (
     LIVE_URL,
     LOGO_PATH,
     MUTEX_NAME,
+    REQUIRED_EXTENSION_VERSION,
     UPDATE_CHECK_INTERVAL_SECONDS,
     enable_windows_dpi_awareness,
 )
@@ -95,6 +96,7 @@ class AutoChzzkApp:
         self.update_download_in_progress = False
         self.update_prompted_version: str | None = None
         self.extension_setup_prompted = False
+        self.extension_update_prompted = False
         self.extension_connected = False
         self.extension_connection_deadline = time.monotonic() + EXTENSION_CONNECTION_GRACE_SECONDS
         self.extension_server = start_extension_server(lambda: self._ui(self._restore_window))
@@ -305,6 +307,7 @@ class AutoChzzkApp:
 
     def _reset_extension_connection_check(self, grace_seconds: int = EXTENSION_CONNECTION_GRACE_SECONDS) -> None:
         self.extension_setup_prompted = False
+        self.extension_update_prompted = False
         self.extension_connected = False
         self.extension_connection_deadline = time.monotonic() + grace_seconds
 
@@ -439,7 +442,11 @@ class AutoChzzkApp:
         if self.stop_event.is_set():
             return
         if CHROME_TABS.is_connected():
-            self._set_extension_status("Chrome 확장 프로그램 연결됨", True)
+            if CHROME_TABS.selected_extension_needs_update(REQUIRED_EXTENSION_VERSION):
+                self._set_extension_status("Chrome 확장 프로그램 업데이트 필요", False)
+                self._prompt_extension_reinstall()
+            else:
+                self._set_extension_status("Chrome 확장 프로그램 연결됨", True)
             if not self.extension_connected:
                 self.extension_connected = True
                 if self.extension_setup_prompted:
@@ -581,6 +588,29 @@ class AutoChzzkApp:
             "확인했습니다",
         )
 
+    def _prompt_extension_reinstall(self) -> None:
+        if self.extension_update_prompted:
+            return
+        if self.active_dialog is not None and self.active_dialog.winfo_exists():
+            self.root.after(1_000, self._prompt_extension_reinstall)
+            return
+        self.extension_update_prompted = True
+        self.show_extension_reinstall_guide()
+
+    def show_extension_reinstall_guide(self) -> None:
+        versions = sorted(version for version in CHROME_TABS.selected_extension_versions() if version)
+        current_version = ", ".join(versions) if versions else "확인할 수 없음"
+        self._show_app_dialog(
+            "Chrome 확장 프로그램 재설치 필요",
+            "연결된 Chrome 확장 프로그램이 현재 앱과 호환되지 않는 이전 버전입니다.\n\n"
+            "chrome://extensions에서 기존 AutoChzzk Chrome Companion을 삭제한 뒤, "
+            "AutoChzzk 설치 폴더의 chrome_extension 폴더를 다시 로드해 주세요.\n\n"
+            f"현재 버전: {current_version}\n필요 버전: {REQUIRED_EXTENSION_VERSION}",
+            "확장 프로그램 열기",
+            self._open_chrome_extensions,
+            "나중에",
+        )
+
     def show_changelog(self) -> None:
         if self.changelog_dialog is not None and self.changelog_dialog.winfo_exists():
             self.changelog_dialog.lift()
@@ -647,7 +677,11 @@ class AutoChzzkApp:
         if self.stop_event.is_set():
             return
         if CHROME_TABS.is_connected():
-            self._set_extension_status("Chrome 확장 프로그램 연결됨", True)
+            if CHROME_TABS.selected_extension_needs_update(REQUIRED_EXTENSION_VERSION):
+                self._set_extension_status("Chrome 확장 프로그램 업데이트 필요", False)
+                self._prompt_extension_reinstall()
+            else:
+                self._set_extension_status("Chrome 확장 프로그램 연결됨", True)
             self.extension_connected = True
             self._hide_status()
             if not self.extension_setup_prompted:

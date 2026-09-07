@@ -15,14 +15,14 @@ class ChromeTabState:
     """Short-lived CHZZK tab reports from every installed Chrome profile."""
 
     def __init__(self) -> None:
-        self.clients: dict[str, tuple[set[str], set[str], float]] = {}
+        self.clients: dict[str, tuple[set[str], set[str], float, str]] = {}
         self.selected_profile_keys: set[str] = set()
         self.last_focused_client_id: str | None = None
         self.pending_opens: dict[str, tuple[str, str]] = {}
         self.pending_closes: dict[str, tuple[str, str]] = {}
         self.lock = threading.Lock()
 
-    def _fresh_clients(self) -> dict[str, tuple[set[str], set[str], float]]:
+    def _fresh_clients(self) -> dict[str, tuple[set[str], set[str], float, str]]:
         now = time.monotonic()
         return {client_id: report for client_id, report in self.clients.items() if now - report[2] < 30}
 
@@ -30,16 +30,23 @@ class ChromeTabState:
         with self.lock:
             self.selected_profile_keys = profile_keys
 
-    def _selected_clients(self) -> dict[str, tuple[set[str], set[str], float]]:
+    def _selected_clients(self) -> dict[str, tuple[set[str], set[str], float, str]]:
         return {
             client_id: report
             for client_id, report in self._fresh_clients().items()
             if report[1] & self.selected_profile_keys
         }
 
-    def update(self, client_id: str, channel_ids: set[str], profile_keys: set[str], focused: bool) -> None:
+    def update(
+        self,
+        client_id: str,
+        channel_ids: set[str],
+        profile_keys: set[str],
+        focused: bool,
+        extension_version: str = "",
+    ) -> None:
         with self.lock:
-            self.clients[client_id] = (channel_ids, profile_keys, time.monotonic())
+            self.clients[client_id] = (channel_ids, profile_keys, time.monotonic(), extension_version)
             self.clients = self._fresh_clients()
             if focused:
                 self.last_focused_client_id = client_id
@@ -48,12 +55,34 @@ class ChromeTabState:
         with self.lock:
             return any(
                 channel_id in channel_ids
-                for channel_ids, _profile_keys, _updated_at in self._selected_clients().values()
+                for channel_ids, _profile_keys, _updated_at, _extension_version in self._selected_clients().values()
             )
 
     def is_connected(self) -> bool:
         with self.lock:
             return bool(self._selected_clients())
+
+    def selected_extension_versions(self) -> set[str]:
+        with self.lock:
+            return {report[3] for report in self._selected_clients().values()}
+
+    def selected_extension_needs_update(self, required_version: str) -> bool:
+        def version_parts(version: str) -> tuple[int, ...] | None:
+            try:
+                return tuple(int(part) for part in version.split("."))
+            except ValueError:
+                return None
+
+        required_parts = version_parts(required_version)
+        with self.lock:
+            clients = self._selected_clients()
+            if not clients or required_parts is None:
+                return False
+            for report in clients.values():
+                installed_parts = version_parts(report[3])
+                if installed_parts is None or installed_parts < required_parts:
+                    return True
+            return False
 
     def queue_background_open(self, url: str) -> str:
         command_id = uuid.uuid4().hex
@@ -161,11 +190,20 @@ class ExtensionRequestHandler(BaseHTTPRequestHandler):
             profile_keys = set()
             profile_gaia_id = payload.get("profileGaiaId", "")
             profile_email = payload.get("profileEmail", "")
+            extension_version = payload.get("extensionVersion", "")
             if isinstance(profile_gaia_id, str) and profile_gaia_id:
                 profile_keys.add(f"gaia:{profile_gaia_id}")
             if isinstance(profile_email, str) and profile_email:
                 profile_keys.add(f"email:{profile_email.lower()}")
-            CHROME_TABS.update(client_id, channel_ids, profile_keys, bool(payload.get("focused")))
+            if not isinstance(extension_version, str) or len(extension_version) > 32:
+                extension_version = ""
+            CHROME_TABS.update(
+                client_id,
+                channel_ids,
+                profile_keys,
+                bool(payload.get("focused")),
+                extension_version,
+            )
             completed = [value for value in payload.get("completedCommandIds", []) if isinstance(value, str)]
             CHROME_TABS.acknowledge_commands(client_id, completed)
             self._reply(payload={"ok": True, "openCommands": CHROME_TABS.pending_commands(client_id)})
