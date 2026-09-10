@@ -139,6 +139,8 @@ class AutoChzzkApp:
         style.map("Dark.TButton", background=[("active", "#50545F")])
         style.configure("Small.TButton", background="#3A3D47", foreground=self.TEXT, borderwidth=0, font=("Malgun Gothic", 8, "bold"), padding=(5, 5))
         style.map("Small.TButton", background=[("active", "#50545F")])
+        style.configure("HeaderRefresh.TButton", background=self.BG, foreground=self.TEXT, borderwidth=0, font=("Malgun Gothic", 8, "bold"), padding=(3, 3))
+        style.map("HeaderRefresh.TButton", background=[("active", self.BG), ("pressed", self.BG)])
         style.configure("SmallAccent.TButton", background=self.ACCENT, foreground="#08251D", borderwidth=0, font=("Malgun Gothic", 8, "bold"), padding=(5, 5))
         style.map("SmallAccent.TButton", background=[("active", "#38EDBB")])
         style.configure("DialogAccent.TButton", background=self.ACCENT, foreground="#08251D", borderwidth=0, font=("Malgun Gothic", 9, "bold"), padding=(10, 7))
@@ -158,7 +160,16 @@ class AutoChzzkApp:
         outer = tk.Frame(self.root, bg=self.BG, padx=30, pady=24); outer.pack(fill="both", expand=True)
         heading = tk.Frame(outer, bg=self.BG); heading.pack(fill="x")
         ttk.Button(heading, text="종료", style="Dark.TButton", command=self.on_close, cursor="hand2").pack(side="right", padx=(0, 0), pady=(4, 0))
-        tk.Label(heading, text=APP_NAME, fg=self.TEXT, bg=self.BG, font=("Malgun Gothic", 18, "bold")).pack(anchor="w")
+        title_row = tk.Frame(heading, bg=self.BG)
+        title_row.pack(anchor="w")
+        tk.Label(title_row, text=APP_NAME, fg=self.TEXT, bg=self.BG, font=("Malgun Gothic", 18, "bold")).pack(side="left")
+        ttk.Button(
+            title_row,
+            text="새로고침",
+            style="HeaderRefresh.TButton",
+            command=self.recheck_extension_status,
+            cursor="hand2",
+        ).pack(side="left", padx=(10, 0), pady=(3, 0))
         tk.Label(heading, text="저장한 채널의 방송 시작을 자동 감지합니다", fg=self.MUTED, bg=self.BG, font=("Malgun Gothic", 9)).pack(anchor="w")
         profile_row = tk.Frame(outer, bg=self.BG)
         profile_row.pack(fill="x", pady=(13, 0))
@@ -438,9 +449,7 @@ class AutoChzzkApp:
             return
         self.on_close()
 
-    def _refresh_extension_status(self) -> None:
-        if self.stop_event.is_set():
-            return
+    def _update_extension_status(self) -> None:
         if CHROME_TABS.is_connected():
             if CHROME_TABS.selected_extension_needs_update(REQUIRED_EXTENSION_VERSION):
                 self._set_extension_status("Chrome 확장 프로그램 업데이트 필요", False)
@@ -455,7 +464,18 @@ class AutoChzzkApp:
             self.extension_connected = False
             self._set_extension_status("Chrome 확장 프로그램 연결 안 됨", False)
         self._update_monitor_status()
+
+    def _refresh_extension_status(self) -> None:
+        if self.stop_event.is_set():
+            return
+        self._update_extension_status()
         self.root.after(2_000, self._refresh_extension_status)
+
+    def recheck_extension_status(self) -> None:
+        """Recheck the selected profile after its next extension heartbeat."""
+        self.extension_update_prompted = False
+        self._set_extension_status("Chrome 확장 프로그램 연결 및 버전 확인 중…")
+        self.root.after(2_500, self._update_extension_status)
 
     def show_profile_editor(self) -> None:
         if len(self.chrome_profiles) < 2:
