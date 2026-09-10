@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from autochzzk import AutoChzzkApp
+from autochzzk_core.config import EXTENSION_RELOAD_GRACE_SECONDS, REQUIRED_EXTENSION_VERSION
 from autochzzk_core.monitor import LookupPool
 
 
@@ -82,3 +83,76 @@ class AppIntegrationTests(unittest.TestCase):
         self.assertEqual(app.selected_chrome_profile['gaia_id'], 'new')
         app._apply_selected_profile.assert_called_once()
         app._reset_extension_connection_check.assert_called_once()
+
+    def test_outdated_extension_gets_automatic_reload_grace_period(self):
+        app = AutoChzzkApp.__new__(AutoChzzkApp)
+        app.extension_reload_deadline = None
+        app.extension_update_prompted = False
+        app._set_extension_status = Mock()
+        app._prompt_extension_reinstall = Mock()
+        with (patch('autochzzk.CHROME_TABS.selected_extension_needs_update', return_value=True),
+              patch('autochzzk.CHROME_TABS.queue_extension_reload', return_value=True) as queue_reload,
+              patch('autochzzk.time.monotonic', return_value=100)):
+            app._set_connected_extension_status()
+
+        queue_reload.assert_called_once_with(REQUIRED_EXTENSION_VERSION)
+        self.assertEqual(app.extension_reload_deadline, 100 + EXTENSION_RELOAD_GRACE_SECONDS)
+        app._set_extension_status.assert_called_once_with('Chrome 확장 프로그램 자동 업데이트 적용 중…')
+        app._prompt_extension_reinstall.assert_not_called()
+
+    def test_failed_automatic_reload_falls_back_to_manual_guide(self):
+        app = AutoChzzkApp.__new__(AutoChzzkApp)
+        app.extension_reload_deadline = 100
+        app.extension_update_prompted = False
+        app._set_extension_status = Mock()
+        app._prompt_extension_reinstall = Mock()
+        with (patch('autochzzk.CHROME_TABS.selected_extension_needs_update', return_value=True),
+              patch('autochzzk.time.monotonic', return_value=101)):
+            app._set_connected_extension_status()
+
+        app._set_extension_status.assert_called_once_with('Chrome 확장 프로그램 업데이트 필요', False)
+        app._prompt_extension_reinstall.assert_called_once()
+
+    def test_connection_reset_allows_reload_for_a_new_profile(self):
+        app = AutoChzzkApp.__new__(AutoChzzkApp)
+        app.extension_setup_prompted = True
+        app.extension_update_prompted = True
+        app.extension_reload_deadline = 1
+        app.extension_connected = True
+
+        app._reset_extension_connection_check()
+
+        self.assertIsNone(app.extension_reload_deadline)
+        self.assertFalse(app.extension_update_prompted)
+
+    def test_delayed_manual_prompt_rechecks_the_installed_version(self):
+        app = AutoChzzkApp.__new__(AutoChzzkApp)
+        app.extension_reload_deadline = 1
+        app.extension_update_prompted = False
+        app.active_dialog = Mock()
+        app.active_dialog.winfo_exists.return_value = True
+        app.root = Mock()
+        app.show_extension_reinstall_guide = Mock()
+        with (patch('autochzzk.CHROME_TABS.is_connected', return_value=True),
+              patch('autochzzk.CHROME_TABS.selected_extension_needs_update', return_value=True),
+              patch('autochzzk.time.monotonic', return_value=2)):
+            app._prompt_extension_reinstall()
+        delayed_prompt = app.root.after.call_args.args[1]
+
+        app.extension_reload_deadline = None
+        with (patch('autochzzk.CHROME_TABS.is_connected', return_value=True),
+              patch('autochzzk.CHROME_TABS.selected_extension_needs_update', return_value=True)):
+            delayed_prompt()
+
+        app.show_extension_reinstall_guide.assert_not_called()
+
+    def test_manual_recheck_keeps_an_active_reload_grace_period(self):
+        app = AutoChzzkApp.__new__(AutoChzzkApp)
+        app.extension_reload_deadline = 123
+        app.extension_update_prompted = True
+        app._set_extension_status = Mock()
+        app.root = Mock()
+
+        app.recheck_extension_status()
+
+        self.assertEqual(app.extension_reload_deadline, 123)

@@ -86,6 +86,28 @@ class ChromeTabStateTests(unittest.TestCase):
         self.tabs.set_selected_profile({"email:other@example.invalid"})
         self.assertEqual(self.tabs.pending_commands("selected-client"), [])
 
+    def test_outdated_extension_is_asked_to_reload_only_once(self) -> None:
+        self.tabs.update(
+            "selected-client", set(), {"email:selected@example.com"}, True, extension_version="2.0.0"
+        )
+
+        self.assertTrue(self.tabs.queue_extension_reload("2.1.0"))
+        commands = self.tabs.pending_commands("selected-client")
+        self.assertEqual(len(commands), 1)
+        self.assertEqual(commands[0]["action"], "reload")
+        self.assertEqual(commands[0]["version"], "2.1.0")
+        self.assertFalse(self.tabs.queue_extension_reload("2.1.0"))
+
+        self.tabs.acknowledge_commands("selected-client", [commands[0]["id"]])
+        self.assertEqual(self.tabs.pending_commands("selected-client"), [])
+        self.assertFalse(self.tabs.queue_extension_reload("2.1.0"))
+
+    def test_current_extension_is_not_asked_to_reload(self) -> None:
+        self.tabs.update(
+            "selected-client", set(), {"email:selected@example.com"}, True, extension_version="2.1.0"
+        )
+        self.assertFalse(self.tabs.queue_extension_reload("2.1.0"))
+
     def test_command_queue_is_bounded_and_acknowledgement_is_client_specific(self) -> None:
         url = "https://chzzk.naver.com/live/" + "a" * 32
         ids = [self.tabs.queue_background_close(url) for _ in range(128)]

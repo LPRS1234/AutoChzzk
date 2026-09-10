@@ -3,9 +3,17 @@ const ENDPOINT = "http://127.0.0.1:8765/chzzk-tabs";
 const completedCommandIds = new Set();
 const recentCommandIds = new Map();
 const COMMAND_URL_PATTERN = /^https:\/\/chzzk\.naver\.com\/live\/[0-9a-f]{32}$/i;
+const VERSION_PATTERN = /^\d+(?:\.\d+){2,3}$/;
+const RELOAD_ATTEMPT_KEY = "extensionReloadAttempt";
+const RELOAD_HANDOFF_KEY = "extensionReloadHandoff";
+const RELOAD_RESTORE_PENDING_KEY = "reloadHandoffRestorePending";
+const RELOAD_HANDOFF_TTL = 120000;
+const MAX_PRESERVED_TABS = 1024;
 const encoder = new TextEncoder();
 const storageReady = chrome.storage.local.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" });
 let commandStateLoaded = false;
+let reloadHandoffLoaded = false;
+let shouldRestoreReloadHandoff = false;
 
 async function loadCommandState() {
   if (commandStateLoaded) return;
@@ -17,6 +25,57 @@ async function loadCommandState() {
 
 async function saveCommandState() {
   await chrome.storage.session.set({ completedCommandIds: [...completedCommandIds], recentCommandIds: [...recentCommandIds] });
+}
+
+function compareVersions(left, right) {
+  const leftParts = left.split(".").map(Number);
+  const rightParts = right.split(".").map(Number);
+  const length = Math.max(leftParts.length, rightParts.length);
+  for (let index = 0; index < length; index++) {
+    const difference = (leftParts[index] || 0) - (rightParts[index] || 0);
+    if (difference !== 0) return difference;
+  }
+  return 0;
+}
+
+async function restoreReloadHandoff() {
+  if (reloadHandoffLoaded) return;
+  await storageReady;
+  const stored = (await chrome.storage.local.get(RELOAD_HANDOFF_KEY))[RELOAD_HANDOFF_KEY];
+  const now = Date.now();
+  if (!stored || typeof stored !== "object" || typeof stored.commandId !== "string"
+      || !/^[0-9a-f]{32}$/.test(stored.commandId) || typeof stored.targetVersion !== "string"
+      || !VERSION_PATTERN.test(stored.targetVersion) || !Number.isFinite(stored.createdAt)
+      || stored.createdAt > now || now - stored.createdAt > RELOAD_HANDOFF_TTL) {
+    await chrome.storage.local.remove(RELOAD_HANDOFF_KEY);
+    await chrome.storage.session.remove(RELOAD_RESTORE_PENDING_KEY);
+    reloadHandoffLoaded = true;
+    return;
+  }
+  await loadCommandState();
+  for (const id of (Array.isArray(stored.completedCommandIds) ? stored.completedCommandIds : [])) {
+    if (typeof id === "string" && /^[0-9a-f]{32}$/.test(id) && completedCommandIds.size < 128) completedCommandIds.add(id);
+  }
+  for (const entry of (Array.isArray(stored.recentCommandIds) ? stored.recentCommandIds : [])) {
+    if (!Array.isArray(entry) || entry.length !== 2) continue;
+    const [id, created] = entry;
+    if (typeof id === "string" && /^[0-9a-f]{32}$/.test(id) && Number.isFinite(created)
+        && created <= now && now - created <= RELOAD_HANDOFF_TTL
+        && recentCommandIds.size < 1024) recentCommandIds.set(id, created);
+  }
+  const tabs = await chrome.tabs.query({ url: ["https://chzzk.naver.com/live/*"] });
+  const validTabs = new Map(tabs.filter((tab) => typeof tab.id === "number" && typeof tab.url === "string")
+    .map((tab) => [tab.id, tab.url]));
+  const autoOpenedTabIds = await getAutoOpenedTabIds();
+  for (const tab of (Array.isArray(stored.autoOpenedTabs) ? stored.autoOpenedTabs : []).slice(0, MAX_PRESERVED_TABS)) {
+    if (typeof tab?.id === "number" && typeof tab.url === "string" && COMMAND_URL_PATTERN.test(tab.url)
+        && validTabs.get(tab.id) === tab.url) autoOpenedTabIds.add(tab.id);
+  }
+  await chrome.storage.session.set({ autoOpenedTabIds: [...autoOpenedTabIds] });
+  await saveCommandState();
+  await chrome.storage.local.remove(RELOAD_HANDOFF_KEY);
+  await chrome.storage.session.remove(RELOAD_RESTORE_PENDING_KEY);
+  reloadHandoffLoaded = true;
 }
 
 async function getPairingKey() {
@@ -148,12 +207,45 @@ async function executeOpenCommands(commands) {
     if (Date.now() - created > 120000 && !completedCommandIds.has(id)) recentCommandIds.delete(id);
   }
   for (const command of commands) {
-    if (typeof command?.id !== "string" || !/^[0-9a-f]{32}$/.test(command.id)
-        || typeof command.url !== "string" || !COMMAND_URL_PATTERN.test(command.url)
-        || !["open", "close"].includes(command.action)) continue;
+    if (typeof command?.id !== "string" || !/^[0-9a-f]{32}$/.test(command.id)) continue;
     if (completedCommandIds.size >= 128) break;
     if (recentCommandIds.has(command.id)) { completedCommandIds.add(command.id); continue; }
     if (recentCommandIds.size >= 1024) break;
+    if (command.action === "reload") {
+      if (typeof command.version !== "string" || !VERSION_PATTERN.test(command.version)) continue;
+      await storageReady;
+      const currentVersion = chrome.runtime.getManifest().version;
+      const attempt = (await chrome.storage.local.get(RELOAD_ATTEMPT_KEY))[RELOAD_ATTEMPT_KEY];
+      if (compareVersions(currentVersion, command.version) >= 0 || attempt?.targetVersion === command.version) {
+        completedCommandIds.add(command.id);
+        recentCommandIds.set(command.id, Date.now());
+        await saveCommandState();
+        continue;
+      }
+      const [autoOpenedTabIds, tabs] = await Promise.all([
+        getAutoOpenedTabIds(),
+        chrome.tabs.query({ url: ["https://chzzk.naver.com/live/*"] }),
+      ]);
+      const autoOpenedTabs = tabs.filter((tab) => typeof tab.id === "number" && autoOpenedTabIds.has(tab.id)
+        && typeof tab.url === "string" && COMMAND_URL_PATTERN.test(tab.url));
+      if (autoOpenedTabs.length > MAX_PRESERVED_TABS) return;
+      const handoff = {
+        commandId: command.id,
+        targetVersion: command.version,
+        createdAt: Date.now(),
+        completedCommandIds: [...completedCommandIds],
+        recentCommandIds: [...recentCommandIds],
+        autoOpenedTabs: autoOpenedTabs.map((tab) => ({ id: tab.id, url: tab.url })),
+      };
+      await chrome.storage.local.set({
+        [RELOAD_ATTEMPT_KEY]: { commandId: command.id, targetVersion: command.version, attemptedAt: Date.now() },
+        [RELOAD_HANDOFF_KEY]: handoff,
+      });
+      chrome.runtime.reload();
+      return;
+    }
+    if (typeof command.url !== "string" || !COMMAND_URL_PATTERN.test(command.url)
+        || !["open", "close"].includes(command.action)) continue;
     if (command.action === "close") {
       await closeAutoOpenedTabs(command.url);
       completedCommandIds.add(command.id);
@@ -182,6 +274,8 @@ async function reportOpenChzzkLives() {
   if (reporting) return;
   reporting = true;
   try {
+    const pendingRestore = (await chrome.storage.session.get(RELOAD_RESTORE_PENDING_KEY))[RELOAD_RESTORE_PENDING_KEY] === true;
+    if (shouldRestoreReloadHandoff || pendingRestore) await restoreReloadHandoff();
     const key = await getPairingKey();
     // Prove the local server knows the paired key before looking up/sending profile data.
     const challenge = await authenticatedPost("/challenge", {}, key);
@@ -210,7 +304,16 @@ async function reportOpenChzzkLives() {
   }
 }
 
-chrome.runtime.onInstalled.addListener(async () => {
+chrome.runtime.onInstalled.addListener(async (details) => {
+  shouldRestoreReloadHandoff = details?.reason === "update";
+  if (shouldRestoreReloadHandoff) {
+    await chrome.storage.session.set({ [RELOAD_RESTORE_PENDING_KEY]: true });
+    try {
+      await restoreReloadHandoff();
+    } catch {
+      // A later authenticated poll retries the one-time handoff restoration.
+    }
+  }
   await ensurePoller();
   chrome.alarms.create("report-open-chzzk-lives", { periodInMinutes: 0.5 });
   reportOpenChzzkLives();

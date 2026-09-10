@@ -8,15 +8,31 @@ const source = readFileSync(new URL("../chrome_extension/background.js", `file:/
 const secret = "ab".repeat(32);
 const url = "https://chzzk.naver.com/live/" + "a".repeat(32);
 const command = (number, action = "open") => ({ id: number.toString(16).padStart(32, "0"), action, url });
+const reloadCommand = (number, version) => ({ id: number.toString(16).padStart(32, "0"), action: "reload", version });
 
-function makeWorker({ storage = {}, fetchImpl, timerImpl } = {}) {
-  const calls = { identity: 0, created: 0, removed: [], requests: [], restricted: false };
+function makeWorker({ storage = {}, localStorage = { pairingSecret: secret, clientId: "synthetic-client" }, version = "2.0.0", fetchImpl, timerImpl } = {}) {
+  const calls = { identity: 0, created: 0, removed: [], requests: [], restricted: false, reloads: 0 };
   const event = () => ({ addListener() {} });
   let now = Date.now();
   const chrome = {
     storage: {
-      local: { async setAccessLevel() { calls.restricted = true; }, async get() { assert.equal(calls.restricted, true); return { pairingSecret: secret, clientId: "synthetic-client" }; } },
-      session: { async get() { return structuredClone(storage); }, async set(values) { Object.assign(storage, structuredClone(values)); } },
+      local: {
+        async setAccessLevel() { calls.restricted = true; },
+        async get(keys) {
+          assert.equal(calls.restricted, true);
+          if (typeof keys === "string") return { [keys]: structuredClone(localStorage[keys]) };
+          const selected = {};
+          for (const key of (Array.isArray(keys) ? keys : Object.keys(localStorage))) selected[key] = structuredClone(localStorage[key]);
+          return selected;
+        },
+        async set(values) { Object.assign(localStorage, structuredClone(values)); },
+        async remove(key) { delete localStorage[key]; },
+      },
+      session: {
+        async get() { return structuredClone(storage); },
+        async set(values) { Object.assign(storage, structuredClone(values)); },
+        async remove(key) { delete storage[key]; },
+      },
     },
     tabs: {
       async query() { return []; }, async create() { calls.created++; return { id: calls.created }; },
@@ -27,7 +43,7 @@ function makeWorker({ storage = {}, fetchImpl, timerImpl } = {}) {
     identity: { async getProfileUserInfo() { calls.identity++; return { id: "synthetic-id", email: "test@example.invalid" }; } },
     offscreen: { async createDocument() {} },
     alarms: { create() {}, onAlarm: event() },
-    runtime: { getManifest() { return { version: "2.0.0" }; }, onInstalled: event(), onStartup: event(), onMessage: event() },
+    runtime: { getManifest() { return { version }; }, reload() { calls.reloads++; }, onInstalled: event(), onStartup: event(), onMessage: event() },
     action: { onClicked: event() },
   };
   const context = vm.createContext({ chrome, crypto: webcrypto, TextEncoder, TextDecoder, URL, AbortController,
@@ -43,7 +59,7 @@ function makeWorker({ storage = {}, fetchImpl, timerImpl } = {}) {
     },
   });
   vm.runInContext(source, context);
-  return { context, calls, storage, chrome, advance(ms) { now += ms; }, run(code) { return vm.runInContext(code, context); } };
+  return { context, calls, storage, localStorage, chrome, advance(ms) { now += ms; }, run(code) { return vm.runInContext(code, context); } };
 }
 
 function signedResponse(endpoint, options, payload) {
@@ -143,4 +159,71 @@ test("close removes only app-opened tabs", async () => {
   worker.context.commands = [command(1, "close")];
   await worker.run("executeOpenCommands(commands)");
   assert.deepEqual(worker.calls.removed, [10]);
+});
+
+test("reload applies updated files once and restores app-opened tab ownership", async () => {
+  const localStorage = { pairingSecret: secret, clientId: "synthetic-client" };
+  const firstSession = { autoOpenedTabIds: [10] };
+  const first = makeWorker({ storage: firstSession, localStorage, version: "2.1.0" });
+  first.chrome.tabs.query = async () => [{ id: 10, url }];
+  first.context.commands = [reloadCommand(1, "2.2.0")];
+  await first.run("executeOpenCommands(commands)");
+  assert.equal(first.calls.reloads, 1);
+  assert.equal(localStorage.extensionReloadAttempt.targetVersion, "2.2.0");
+  assert.equal(localStorage.extensionReloadHandoff.commandId, reloadCommand(1, "2.2.0").id);
+
+  const restarted = makeWorker({ storage: {}, localStorage, version: "2.2.0" });
+  restarted.chrome.tabs.query = async () => [{ id: 10, url }];
+  await restarted.run("shouldRestoreReloadHandoff = true; restoreReloadHandoff()")
+  restarted.context.commands = [reloadCommand(1, "2.2.0")];
+  await restarted.run("executeOpenCommands(commands)");
+  assert.equal(restarted.calls.reloads, 0);
+  assert.deepEqual(restarted.storage.autoOpenedTabIds, [10]);
+  assert.equal(restarted.run("completedCommandIds.size"), 1);
+  assert.equal(localStorage.extensionReloadHandoff, undefined);
+  assert.equal(localStorage.extensionReloadAttempt.targetVersion, "2.2.0");
+});
+
+test("browser startup does not restore a reload-only session handoff", async () => {
+  const commandId = reloadCommand(1, "2.2.0").id;
+  const localStorage = {
+    pairingSecret: secret,
+    clientId: "synthetic-client",
+    extensionReloadHandoff: { commandId, targetVersion: "2.2.0", createdAt: Date.now(),
+      completedCommandIds: [], recentCommandIds: [], autoOpenedTabs: [{ id: 10, url }] },
+  };
+  const worker = makeWorker({ storage: {}, localStorage, version: "2.2.0" });
+  worker.chrome.tabs.query = async () => [{ id: 10, url }];
+
+  await worker.run("reportOpenChzzkLives()");
+
+  assert.equal(worker.storage.autoOpenedTabIds, undefined);
+});
+
+test("a previous attempt blocks another reload for the same target version", async () => {
+  const localStorage = { pairingSecret: secret, clientId: "synthetic-client",
+    extensionReloadAttempt: { commandId: reloadCommand(1, "2.2.0").id, targetVersion: "2.2.0", attemptedAt: Date.now() } };
+  const worker = makeWorker({ localStorage, version: "2.1.0" });
+  worker.context.commands = [reloadCommand(2, "2.2.0")];
+
+  await worker.run("executeOpenCommands(commands)");
+
+  assert.equal(worker.calls.reloads, 0);
+  assert.equal(worker.run("completedCommandIds.size"), 1);
+});
+
+test("handoff restoration resumes after an update worker restart", async () => {
+  const commandId = reloadCommand(1, "2.2.0").id;
+  const localStorage = { pairingSecret: secret, clientId: "synthetic-client",
+    extensionReloadHandoff: { commandId, targetVersion: "2.2.0", createdAt: Date.now(),
+      completedCommandIds: [], recentCommandIds: [], autoOpenedTabs: [{ id: 10, url }] } };
+  const storage = { reloadHandoffRestorePending: true };
+  const worker = makeWorker({ storage, localStorage, version: "2.2.0" });
+  worker.chrome.tabs.query = async () => [{ id: 10, url }];
+
+  await worker.run("reportOpenChzzkLives()");
+
+  assert.deepEqual(storage.autoOpenedTabIds, [10]);
+  assert.equal(storage.reloadHandoffRestorePending, undefined);
+  assert.equal(localStorage.extensionReloadHandoff, undefined);
 });

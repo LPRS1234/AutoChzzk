@@ -27,6 +27,8 @@ class ChromeTabState:
         self.last_focused_client_id: str | None = None
         self.pending_opens: dict[str, tuple[str, str, float]] = {}
         self.pending_closes: dict[str, tuple[str, str, float]] = {}
+        self.pending_reloads: dict[str, tuple[str, str, float]] = {}
+        self.reload_attempts: set[tuple[str, str]] = set()
         self.lock = threading.Lock()
 
     def _fresh_clients(self) -> dict[str, tuple[set[str], set[str], float, str]]:
@@ -38,6 +40,8 @@ class ChromeTabState:
             if self.selected_profile_keys != profile_keys:
                 self.pending_opens.clear()
                 self.pending_closes.clear()
+                self.pending_reloads.clear()
+                self.reload_attempts.clear()
             self.selected_profile_keys = set(profile_keys)
 
     def _selected_clients(self) -> dict[str, tuple[set[str], set[str], float, str]]:
@@ -79,19 +83,13 @@ class ChromeTabState:
             return {report[3] for report in self._selected_clients().values()}
 
     def selected_extension_needs_update(self, required_version: str) -> bool:
-        def version_parts(version: str) -> tuple[int, ...] | None:
-            try:
-                return tuple(int(part) for part in version.split("."))
-            except ValueError:
-                return None
-
-        required_parts = version_parts(required_version)
+        required_parts = _version_parts(required_version)
         with self.lock:
             clients = self._selected_clients()
             if not clients or required_parts is None:
                 return False
             for report in clients.values():
-                installed_parts = version_parts(report[3])
+                installed_parts = _version_parts(report[3])
                 if installed_parts is None or installed_parts < required_parts:
                     return True
             return False
@@ -112,7 +110,7 @@ class ChromeTabState:
             )
             self.pending_closes = {key: value for key, value in self.pending_closes.items()
                                    if value[:2] != (url, target_client_id)}
-            if len(self.pending_opens) + len(self.pending_closes) >= 128:
+            if len(self.pending_opens) + len(self.pending_closes) + len(self.pending_reloads) >= 128:
                 return ""
             self.pending_opens[command_id] = (url, target_client_id, time.monotonic())
         return command_id
@@ -134,15 +132,39 @@ class ChromeTabState:
             )
             self.pending_opens = {key: value for key, value in self.pending_opens.items()
                                  if value[:2] != (url, target_client_id)}
-            if len(self.pending_opens) + len(self.pending_closes) >= 128:
+            if len(self.pending_opens) + len(self.pending_closes) + len(self.pending_reloads) >= 128:
                 return ""
             self.pending_closes[command_id] = (url, target_client_id, time.monotonic())
         return command_id
+
+    def queue_extension_reload(self, required_version: str) -> bool:
+        """Ask each outdated selected extension to reload its unpacked files once."""
+        required_parts = _version_parts(required_version)
+        if required_parts is None:
+            return False
+        queued = False
+        with self.lock:
+            self._expire_commands()
+            for client_id, report in self._selected_clients().items():
+                installed_parts = _version_parts(report[3])
+                attempt = (client_id, required_version)
+                if installed_parts is not None and installed_parts >= required_parts:
+                    continue
+                if attempt in self.reload_attempts:
+                    continue
+                if len(self.pending_opens) + len(self.pending_closes) + len(self.pending_reloads) >= 128:
+                    break
+                command_id = uuid.uuid4().hex
+                self.pending_reloads[command_id] = (client_id, required_version, time.monotonic())
+                self.reload_attempts.add(attempt)
+                queued = True
+        return queued
 
     def _expire_commands(self) -> None:
         now = time.monotonic()
         self.pending_opens = {key: value for key, value in self.pending_opens.items() if now - value[2] < 30}
         self.pending_closes = {key: value for key, value in self.pending_closes.items() if now - value[2] < 30}
+        self.pending_reloads = {key: value for key, value in self.pending_reloads.items() if now - value[2] < 30}
 
     def pending_commands(self, client_id: str) -> list[dict[str, str]]:
         with self.lock:
@@ -157,6 +179,11 @@ class ChromeTabState:
                 for command_id, (url, target_client_id, _created) in self.pending_closes.items()
                 if target_client_id == client_id
             )
+            commands.extend(
+                {"id": command_id, "action": "reload", "version": version}
+                for command_id, (target_client_id, version, _created) in self.pending_reloads.items()
+                if target_client_id == client_id
+            )
             return commands
 
     def acknowledge_commands(self, client_id: str, command_ids: list[str]) -> None:
@@ -168,6 +195,9 @@ class ChromeTabState:
                 command = self.pending_closes.get(command_id)
                 if command is not None and command[1] == client_id:
                     self.pending_closes.pop(command_id, None)
+                command = self.pending_reloads.get(command_id)
+                if command is not None and command[0] == client_id:
+                    self.pending_reloads.pop(command_id, None)
 
     def is_pending(self, command_id: str) -> bool:
         with self.lock:
@@ -178,6 +208,7 @@ class ChromeTabState:
         with self.lock:
             self.pending_opens.pop(command_id, None)
             self.pending_closes.pop(command_id, None)
+            self.pending_reloads.pop(command_id, None)
 
 
 CHROME_TABS = ChromeTabState()
@@ -189,6 +220,12 @@ PAIRING_PATH = LOCAL_DATA_DIR / "extension_pairing.key"
 MAX_BODY = 32_768
 AUTH_WINDOW = 60
 _PAIRING_LOCK = threading.Lock()
+
+
+def _version_parts(version: str) -> tuple[int, ...] | None:
+    if not isinstance(version, str) or not re.fullmatch(r"\d+(?:\.\d+){2,3}", version):
+        return None
+    return tuple(int(part) for part in version.split("."))
 
 
 def _protect_key(data: bytes, *, decrypt: bool = False) -> bytes:

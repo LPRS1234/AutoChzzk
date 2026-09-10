@@ -86,6 +86,19 @@ class BridgeHTTPTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(data)["acknowledgedCommandIds"], ["b" * 32])
 
+    def test_reload_command_is_delivered_only_to_the_selected_client(self):
+        extension.CHROME_TABS.set_selected_profile({"email:test@example.invalid"})
+        self.assertEqual(self.request(self.report())[0], 200)
+        self.assertTrue(extension.CHROME_TABS.queue_extension_reload("2.1.0"))
+
+        status, _, data, _ = self.request(self.report())
+
+        self.assertEqual(status, 200)
+        commands = json.loads(data)["openCommands"]
+        self.assertEqual(len(commands), 1)
+        self.assertEqual(commands[0]["action"], "reload")
+        self.assertEqual(commands[0]["version"], "2.1.0")
+
     def test_socket_timeout_and_worker_limit(self):
         client = socket.create_connection(self.server.server_address, timeout=2)
         client.sendall(b"POST /challenge HTTP/1.1\r\n")
