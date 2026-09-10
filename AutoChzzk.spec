@@ -5,7 +5,7 @@ a = Analysis(
     ['autochzzk.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[('assets/logo/app-icon.png', 'assets/logo'), ('assets/logo/app-icon.ico', 'assets/logo')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

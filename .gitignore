@@ -1,7 +1,14 @@
 __pycache__/
+.venv/
 *.py[cod]
 channels.json
 settings.json
+channels.json.bak
+settings.json.bak
+channels.json.*.tmp
+settings.json.*.tmp
+channels.json.bak.*.tmp
+settings.json.bak.*.tmp
 build/
 dist/
 release/

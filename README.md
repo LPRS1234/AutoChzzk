@@ -1,6 +1,28 @@
 # AutoChzzk
 
-현재 버전: **1.5.0**
+현재 버전: **2.0.0**
+
+## 2.0.0으로 전환
+
+2.0.0은 로컬 연결 인증을 추가하여 이전 확장 프로그램과 호환되지 않습니다. 앱과 `chrome_extension`을 함께 업데이트하고, Chrome에서 확장 프로그램을 새로고침한 뒤 앱의 **확장 연결 코드**를 확장 프로그램 설정에 한 번 등록하세요. 각 Chrome 프로필에서 처음 연결할 때 등록이 필요합니다. 저장한 채널과 기존 설정 형식은 유지됩니다.
+
+연결 코드는 비밀번호처럼 취급하세요. 앱은 코드를 사용자별 로컬 데이터 폴더에서 관리하며 네트워크로 코드 자체를 보내지 않습니다. 계정 식별값과 방송 상태는 연결 상대 확인 후 로컬로 전달합니다.
+
+## 개발 및 검증
+
+Windows 64비트 CPython **3.13.14**를 기준으로 의존성을 고정했습니다. 새 가상환경에서 다음 명령을 실행합니다.
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python -m pip install -r requirements-build.txt
+.\.venv\Scripts\python -B -m unittest discover -s tests -v
+node --test tests/*.test.js
+.\.venv\Scripts\python -m PyInstaller AutoChzzk.spec
+```
+
+JavaScript 테스트에는 Node.js 24를 사용합니다. 빌드된 EXE는 `dist/AutoChzzk`에 생성되며, 런타임 로고 이미지도 포함합니다. 설치 파일은 Inno Setup 6에서 `installer/AutoChzzk.iss`로 별도 빌드합니다. 기존 빌드 결과를 보존하려면 PyInstaller의 `--distpath`와 `--workpath`, Inno Setup의 `MyOutputDir`를 새 디렉터리로 지정하세요. 빌드만으로 GitHub Release가 생성되거나 배포되지는 않습니다.
+
+고정 버전은 검증 환경을 재현하기 위한 값입니다. 의존성을 업데이트할 때는 위 테스트와 Windows 빌드를 다시 검증한 뒤 런타임·빌드 요구사항을 함께 갱신합니다.
 
 ## 업데이트
 

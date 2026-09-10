@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+from queue import SimpleQueue
 import subprocess
 import sys
 import threading
@@ -14,7 +15,7 @@ import webbrowser
 from pathlib import Path
 from tkinter import messagebox, ttk
 
-from autochzzk_core.chrome_profiles import get_chrome_profiles
+from autochzzk_core.chrome_profiles import ProfileReadError, get_chrome_profiles
 from autochzzk_core.changelog import RELEASE_NOTES
 from autochzzk_core.chzzk_api import (
     extract_channel_id,
@@ -28,7 +29,6 @@ from autochzzk_core.config import (
     EXTENSION_CONNECTION_GRACE_SECONDS,
     EXTENSION_INITIAL_SYNC_SECONDS,
     EXTENSION_LAUNCH_CONNECTION_GRACE_SECONDS,
-    EXTENSION_PORT,
     ICO_PATH,
     LIVE_URL,
     LOGO_PATH,
@@ -40,9 +40,12 @@ from autochzzk_core.config import (
 from autochzzk_core.extension import (
     CHROME_TABS,
     clear_show_window_callback,
+    get_pairing_secret,
+    request_show_window,
     start_extension_server,
 )
-from autochzzk_core.storage import load_channels, load_settings, save_channels, save_settings
+from autochzzk_core.storage import StorageError, load_channels, load_settings, save_channels, save_settings
+from autochzzk_core.monitor import LookupPool
 from autochzzk_core.updater import (
     UpdateCancelled,
     UpdateError,
@@ -67,6 +70,9 @@ class AutoChzzkApp:
 
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
+        self.ui_queue = SimpleQueue()
+        self.storage_errors = []
+        self.channels_read_only = self.settings_read_only = False
         root.title(APP_NAME)
         root.geometry("620x650")
         root.minsize(540, 540)
@@ -80,15 +86,17 @@ class AutoChzzkApp:
         self.profile_value = tk.StringVar(value=self.selected_chrome_profile["name"])
         self._apply_selected_profile()
         self.channels = self._load_channels()
-        # Migrate channels created by versions before per-channel intervals.
-        self._save_channels()
         self.was_live: dict[str, bool] = {}
         self.live_info: dict[str, tuple[bool, str]] = {}
         self.watching_indicators: dict[str, tk.Label] = {}
         self.editing_channel_id: str | None = None
-        # Delay the normal polling loop while the startup check runs, so every
-        # enabled saved channel is checked exactly once as soon as the app opens.
-        self.last_checked: dict[str, float] = {channel["id"]: time.monotonic() for channel in self.channels if channel.get("enabled")}
+        self.last_checked = {}
+        self.lookup_pool = LookupPool()
+        self.pending_additions = set()
+        self.channel_generations = {}
+        self.initial_checks = {channel["id"] for channel in self.channels}
+        self.force_open_checks = set()
+        self.retry_open_checks = set()
         self.stop_event = threading.Event()
         self.tray_icon = None
         self.active_dialog = None
@@ -114,8 +122,10 @@ class AutoChzzkApp:
         root.after(500, self._check_extension_connection)
         root.after(1_000, self._refresh_extension_status)
         root.after(5_000, self._check_selected_profile_exists)
-        threading.Thread(target=self._monitor, daemon=True).start()
-        threading.Thread(target=self._check_saved_channels_on_start, daemon=True).start()
+        root.after(50, self._drain_ui_queue)
+        self._monitor()
+        if self.storage_errors:
+            self._show_app_dialog("저장 파일 확인", "\n".join(self.storage_errors))
         self._schedule_update_check()
 
     def _load_brand_icons(self) -> None:
@@ -185,7 +195,10 @@ class AutoChzzkApp:
         self.extension_status_dot.pack(side="left", padx=(0, 5))
         tk.Label(extension_row, textvariable=self.extension_status_value, fg=self.MUTED, bg=self.BG, font=("Malgun Gothic", 8), anchor="w").pack(side="left")
         ttk.Button(extension_row, text="설치 안내", style="Small.TButton", command=self.show_extension_install_guide, cursor="hand2").pack(side="right")
-        tk.Label(outer, text="자동 접속을 사용하려면 선택한 Chrome 프로필에 확장 프로그램을 설치해야 합니다.", fg=self.MUTED, bg=self.BG, font=("Malgun Gothic", 8), anchor="w").pack(fill="x", pady=(2, 0))
+        pairing_row = tk.Frame(outer, bg=self.BG)
+        pairing_row.pack(fill="x", pady=(2, 0))
+        tk.Label(pairing_row, text="자동 접속: 확장 설치 후 연결 코드를 등록하세요.", fg=self.MUTED, bg=self.BG, font=("Malgun Gothic", 8), anchor="w").pack(side="left")
+        ttk.Button(pairing_row, text="확장 연결 코드", style="Small.TButton", command=self.show_extension_pairing, cursor="hand2").pack(side="right")
         self.profile_editor = tk.Frame(outer, bg=self.SURFACE, padx=14, pady=10)
         tk.Label(self.profile_editor, text="변경할 Chrome 프로필", fg=self.TEXT, bg=self.SURFACE, font=("Malgun Gothic", 9, "bold")).pack(side="left")
         self.profile_selector = ttk.Combobox(self.profile_editor, textvariable=self.profile_value, values=list(self.profile_labels), state="readonly", width=20, font=("Malgun Gothic", 9), style="Dark.TCombobox")
@@ -256,30 +269,51 @@ class AutoChzzkApp:
         return "break"
 
     def _load_channels(self) -> list[dict]:
-        return load_channels()
+        try:
+            return load_channels()
+        except StorageError:
+            self.channels_read_only = True
+            self.storage_errors.append("channels.json을 읽지 못해 원본을 보존했습니다. 파일을 복구한 뒤 다시 실행해 주세요. 해당 데이터의 변경은 저장되지 않습니다.")
+            return []
 
     def _load_settings(self) -> dict:
-        return load_settings()
+        try:
+            return load_settings()
+        except StorageError:
+            self.settings_read_only = True
+            self.storage_errors.append("settings.json을 읽지 못해 원본을 보존했습니다. 파일을 복구한 뒤 다시 실행해 주세요. 해당 데이터의 변경은 저장되지 않습니다.")
+            return {}
 
     def _scan_chrome_profiles(self) -> None:
         """Read Chrome's profile list on every app launch."""
-        self.chrome_profiles = get_chrome_profiles()
+        try:
+            self.chrome_profiles = get_chrome_profiles()
+        except ProfileReadError:
+            self.chrome_profiles = [{"directory": self.settings.get("chrome_profile_directory", "Default"), "name": "프로필 확인 대기", "gaia_id": "", "email": ""}]
+            self.storage_errors.append("Chrome 프로필 정보를 읽지 못했습니다. 기존 선택을 보존하고 다시 확인합니다.")
         self.profile_labels = {profile["name"]: profile for profile in self.chrome_profiles}
         saved_profile_directory = self.settings.get("chrome_profile_directory")
         self.selected_chrome_profile = next((profile for profile in self.chrome_profiles if profile["directory"] == saved_profile_directory), self.chrome_profiles[0])
         if saved_profile_directory and self.selected_chrome_profile["directory"] != saved_profile_directory:
+            previous_settings = dict(self.settings)
             self.settings["chrome_profile_directory"] = self.selected_chrome_profile["directory"]
-            self._save_settings()
+            if not self._save_settings():
+                self.settings = previous_settings
 
     def _check_selected_profile_exists(self) -> None:
         if self.stop_event.is_set():
             return
         current_directory = self.selected_chrome_profile["directory"]
-        available_profiles = get_chrome_profiles()
-        known_profiles = [(profile["directory"], profile["name"]) for profile in self.chrome_profiles]
-        refreshed_profiles = [(profile["directory"], profile["name"]) for profile in available_profiles]
+        try:
+            available_profiles = get_chrome_profiles()
+        except ProfileReadError:
+            self.root.after(5_000, self._check_selected_profile_exists)
+            return
+        known_profiles = self.chrome_profiles
+        refreshed_profiles = available_profiles
         current_profile_exists = any(profile["directory"] == current_directory for profile in available_profiles)
         if known_profiles != refreshed_profiles:
+            previous_profile = self.selected_chrome_profile
             previous_name = self.selected_chrome_profile["name"]
             self.chrome_profiles = available_profiles
             self.profile_labels = {profile["name"]: profile for profile in self.chrome_profiles}
@@ -287,9 +321,11 @@ class AutoChzzkApp:
                 self.selected_chrome_profile = next(profile for profile in self.chrome_profiles if profile["directory"] == current_directory)
             else:
                 self.selected_chrome_profile = self.chrome_profiles[0]
+                previous_settings = dict(self.settings)
                 self.settings["chrome_profile_directory"] = self.selected_chrome_profile["directory"]
-                self._save_settings()
-                self._apply_selected_profile()
+                if not self._save_settings():
+                    self.settings = previous_settings
+            self._apply_selected_profile()
             self.profile_value.set(self.selected_chrome_profile["name"])
             self.current_profile_label.configure(text=self.selected_chrome_profile["name"])
             self.profile_selector.configure(values=list(self.profile_labels))
@@ -297,16 +333,26 @@ class AutoChzzkApp:
                 self.profile_change_button.pack(side="right")
             else:
                 self.profile_change_button.pack_forget()
-            if not current_profile_exists:
+            identity_changed = any(previous_profile.get(field) != self.selected_chrome_profile.get(field)
+                                   for field in ("directory", "gaia_id", "email"))
+            if identity_changed:
                 self.profile_editor.pack_forget()
                 self._reset_extension_connection_check()
                 self._set_extension_status("Chrome 확장 프로그램 연결 확인 중…")
-                self._set_status(f"사용 중이던 Chrome 프로필({previous_name})이 삭제되어 {self.selected_chrome_profile['name']} 프로필로 변경했습니다.", True)
+                if not current_profile_exists:
+                    self._set_status(f"사용 중이던 Chrome 프로필({previous_name})을 사용할 수 없어 {self.selected_chrome_profile['name']} 프로필로 변경했습니다.", True)
                 self.root.after(500, self._check_extension_connection)
         self.root.after(5_000, self._check_selected_profile_exists)
 
-    def _save_settings(self) -> None:
-        save_settings(self.settings)
+    def _save_settings(self) -> bool:
+        try:
+            if self.settings_read_only:
+                raise StorageError("설정 파일 복구가 필요합니다.")
+            save_settings(self.settings)
+            return True
+        except StorageError:
+            self._ui(self._set_status, "설정을 저장하지 못했습니다. 파일 상태와 쓰기 권한을 확인해 주세요.", True)
+            return False
 
     def _apply_selected_profile(self) -> None:
         profile_keys = set()
@@ -459,7 +505,7 @@ class AutoChzzkApp:
             if not self.extension_connected:
                 self.extension_connected = True
                 if self.extension_setup_prompted:
-                    threading.Thread(target=self._open_current_lives_after_extension_connect, daemon=True).start()
+                    self._open_current_lives_after_extension_connect()
         else:
             self.extension_connected = False
             self._set_extension_status("Chrome 확장 프로그램 연결 안 됨", False)
@@ -499,9 +545,13 @@ class AutoChzzkApp:
         self.profile_editor.pack_forget()
         if profile == self.selected_chrome_profile:
             return
-        self.selected_chrome_profile = profile
+        previous_settings = dict(self.settings)
         self.settings["chrome_profile_directory"] = profile["directory"]
-        self._save_settings()
+        if not self._save_settings():
+            self.settings = previous_settings
+            self.profile_value.set(self.selected_chrome_profile["name"])
+            return
+        self.selected_chrome_profile = profile
         self._apply_selected_profile()
         self._reset_extension_connection_check()
         self.current_profile_label.configure(text=profile["name"])
@@ -509,8 +559,15 @@ class AutoChzzkApp:
         self._set_status(f"{profile['name']} Chrome 프로필에서만 방송 감지와 자동 접속을 사용합니다.")
         self.root.after(1_000, self._check_extension_connection)
 
-    def _save_channels(self) -> None:
-        save_channels(self.channels)
+    def _save_channels(self, channels=None) -> bool:
+        try:
+            if self.channels_read_only:
+                raise StorageError("채널 파일 복구가 필요합니다.")
+            save_channels(self.channels if channels is None else channels)
+            return True
+        except StorageError:
+            self._set_status("채널 변경을 저장하지 못했습니다. 원본 파일과 쓰기 권한을 확인해 주세요.", True)
+            return False
 
     def _show_app_dialog(self, title: str, message: str, confirm_text: str = "확인", confirm_command=None, cancel_text: str | None = None, cancel_command=None) -> None:
         """Show an app-styled modal instead of a Windows system dialog."""
@@ -599,10 +656,46 @@ class AutoChzzkApp:
             return False
         return "chrome.exe" in result.stdout.lower()
 
+    def show_extension_pairing(self) -> None:
+        self._show_app_dialog(
+            "확장 연결 코드",
+            "1. 아래 버튼으로 연결 코드를 복사합니다.\n"
+            "2. 선택한 Chrome 프로필에서 AutoChzzk 확장 아이콘을 클릭합니다.\n"
+            "3. 설정 화면에 코드를 붙여넣고 저장합니다.\n\n"
+            "앱과 확장 프로그램은 모두 2.0.0 이상이어야 합니다.\n"
+            "연결 코드는 다른 사람에게 공유하지 마세요. 복사한 코드는 60초 후 클립보드에서 지웁니다.",
+            "연결 코드 복사",
+            self._copy_extension_pairing_code,
+            "닫기",
+        )
+
+    def _copy_extension_pairing_code(self) -> None:
+        try:
+            secret = get_pairing_secret()
+            self.root.clipboard_clear()
+            self.root.clipboard_append(secret)
+        except (OSError, ValueError, tk.TclError):
+            self._show_app_dialog("연결 코드 오류", "연결 코드를 읽거나 복사하지 못했습니다. 앱의 로컬 데이터 폴더 접근 권한을 확인해 주세요.")
+            return
+        self._copied_pairing_secret = secret
+
+        def clear_copied_code() -> None:
+            try:
+                # Do not remove anything the user copied after the pairing code.
+                if self.root.clipboard_get() == secret:
+                    self.root.clipboard_clear()
+            except tk.TclError:
+                pass
+            if getattr(self, "_copied_pairing_secret", None) == secret:
+                self._copied_pairing_secret = None
+
+        self.root.after(60_000, clear_copied_code)
+        self._set_status("연결 코드를 복사했습니다. Chrome의 AutoChzzk 확장 설정에 붙여넣으세요.")
+
     def show_extension_install_guide(self) -> None:
         self._show_app_dialog(
             "Chrome 확장 프로그램 설치 안내",
-            f"선택한 Chrome 프로필({self.selected_chrome_profile['name']})에만 설치하면 됩니다.\n\n1. Chrome 열기를 누릅니다.\n2. chrome://extensions 에 접속합니다.\n3. 화면 우측 상단의 ‘개발자 모드’를 켭니다.\n4. ‘압축해제된 확장 프로그램 로드’를 눌러 AutoChzzk 설치 폴더의 chrome_extension 폴더를 선택합니다.\n\n이미 다른 프로필에 설치했다면 ‘프로필 변경’에서 그 프로필로 바꿔 주세요.",
+            f"선택한 Chrome 프로필({self.selected_chrome_profile['name']})에만 설치하면 됩니다.\n\n1. Chrome 열기를 누릅니다.\n2. chrome://extensions 에 접속합니다.\n3. 화면 우측 상단의 ‘개발자 모드’를 켭니다.\n4. ‘압축해제된 확장 프로그램 로드’를 눌러 AutoChzzk 설치 폴더의 chrome_extension 폴더를 선택합니다.\n5. 앱의 ‘확장 연결 코드’를 복사하고, 확장 아이콘을 클릭해 설정에 등록합니다.\n\n이전 버전은 확장 새로고침 후 연결 코드를 등록해야 합니다. 이미 다른 프로필에 설치했다면 ‘프로필 변경’에서 그 프로필로 바꿔 주세요.",
             "Chrome 열기",
             self._open_chrome_extensions,
             "확인했습니다",
@@ -706,7 +799,7 @@ class AutoChzzkApp:
             self._hide_status()
             if not self.extension_setup_prompted:
                 self.extension_setup_prompted = True
-                threading.Thread(target=self._open_current_lives_after_extension_connect, daemon=True).start()
+                self._open_current_lives_after_extension_connect()
             return
         if self.extension_setup_prompted:
             return
@@ -725,16 +818,7 @@ class AutoChzzkApp:
 
     def _open_current_lives_after_extension_connect(self) -> None:
         """Open broadcasts that were already live while the extension was disconnected."""
-        for channel in [dict(item) for item in self.channels if item.get("enabled")]:
-            if self.stop_event.is_set():
-                return
-            try:
-                is_live, title = get_live_status(channel["id"])
-            except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError, TimeoutError):
-                continue
-            self._ui(self._record_live_status, channel["id"], is_live, title)
-            if is_live:
-                self._ui(self._open_live, channel, title)
+        self.force_open_checks.update(channel["id"] for channel in self.channels if channel.get("enabled"))
 
     def add_channel(self) -> None:
         channel_id = extract_channel_id(self.input_value.get())
@@ -743,13 +827,32 @@ class AutoChzzkApp:
             self._show_app_dialog("입력 확인", message)
             return
         if any(channel["id"] == channel_id for channel in self.channels): messagebox.showinfo(APP_NAME, "이미 등록된 채널입니다."); return
-        self._set_status("채널 정보를 불러오는 중…"); self.root.update_idletasks()
-        try: name = get_channel_name(channel_id)
-        except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError, TimeoutError): name = channel_id
-        new_channel = {"id": channel_id, "name": name, "enabled": True, "interval": 60}
-        self.channels.append(new_channel); self._save_channels(); self.input_value.set(""); self._refresh_list()
-        self.last_checked[channel_id] = time.monotonic()
-        threading.Thread(target=self._check_channel_now, args=(dict(new_channel),), daemon=True).start()
+        if channel_id in self.pending_additions:
+            return
+        if self.channels_read_only:
+            self._set_status("채널 파일을 복구한 뒤 다시 실행해 주세요.", True)
+            return
+        def complete(name, error):
+            self.pending_additions.discard(channel_id)
+            if error:
+                self._set_status("채널 정보를 확인하지 못했습니다. 잠시 후 다시 시도해 주세요.", True)
+                return
+            if any(channel["id"] == channel_id for channel in self.channels):
+                return
+            channels = self.channels + [{"id": channel_id, "name": name, "enabled": True, "interval": 60}]
+            if not self._save_channels(channels):
+                return
+            self.channels = channels
+            if extract_channel_id(self.input_value.get()) == channel_id:
+                self.input_value.set("")
+            self.initial_checks.add(channel_id)
+            self._refresh_list()
+            self._set_status("채널 등록 완료 · 방송 상태 확인 중…")
+        if self.lookup_pool.submit(("name", channel_id), lambda: get_channel_name(channel_id), complete):
+            self.pending_additions.add(channel_id)
+            self._set_status("채널 정보를 불러오는 중…")
+        else:
+            self._set_status("방송 상태를 확인 중입니다. 잠시 후 채널 추가를 다시 눌러 주세요.")
 
     def _refresh_list(self) -> None:
         for child in self.list_frame.winfo_children(): child.destroy()
@@ -819,16 +922,28 @@ class AutoChzzkApp:
         self._refresh_list()
 
     def toggle_channel(self, channel_id: str) -> None:
-        for channel in self.channels:
+        channels = [dict(item) for item in self.channels]
+        for channel in channels:
             if channel["id"] == channel_id:
-                channel["enabled"] = not bool(channel.get("enabled")); self.was_live.pop(channel_id, None); break
-        self._save_channels(); self._refresh_list()
+                channel["enabled"] = not bool(channel.get("enabled"))
+                break
+        if self._save_channels(channels):
+            self.channels = channels
+            self._invalidate_channel(channel_id)
+            self._refresh_list()
 
     def confirm_remove_channel(self, channel_id: str, channel_name: str) -> None:
         self._show_app_dialog("채널 삭제", f"‘{channel_name}’ 채널을 삭제하시겠습니까?", "삭제", lambda: self.remove_channel(channel_id), "취소")
 
     def remove_channel(self, channel_id: str) -> None:
-        self.channels = [channel for channel in self.channels if channel["id"] != channel_id]; self.was_live.pop(channel_id, None); self.editing_channel_id = None; self._save_channels(); self._refresh_list()
+        channels = [channel for channel in self.channels if channel["id"] != channel_id]
+        if self._save_channels(channels):
+            self.channels = channels
+            self._invalidate_channel(channel_id)
+            self.initial_checks.discard(channel_id)
+            self.live_info.pop(channel_id, None)
+            self.editing_channel_id = None
+            self._refresh_list()
 
     def update_interval(self, channel_id: str, value: str) -> None:
         try:
@@ -839,54 +954,68 @@ class AutoChzzkApp:
         if interval < 15:
             self._show_app_dialog("입력 확인", "확인 간격은 최소 15초 이상이어야 합니다.")
             return
+        channels = [dict(item) for item in self.channels]
         channel_name = channel_id
-        for channel in self.channels:
+        for channel in channels:
             if channel["id"] == channel_id:
-                channel["interval"] = interval; channel_name = channel.get("name") or channel_id; break
-        self._save_channels(); self.last_checked.pop(channel_id, None); self.editing_channel_id = None; self._refresh_list()
+                channel["interval"] = interval
+                channel_name = channel.get("name") or channel_id
+                break
+        if not self._save_channels(channels):
+            return
+        self.channels = channels
+        self.last_checked.pop(channel_id, None)
+        self.editing_channel_id = None
+        self._refresh_list()
         self._set_status(f"{channel_name} 확인 간격을 {interval}초로 적용했습니다.")
 
     def _monitor(self) -> None:
-        while not self.stop_event.is_set():
-            for channel in [dict(item) for item in self.channels if item.get("enabled")]:
-                if self.stop_event.is_set(): break
-                channel_id = channel["id"]
-                if time.monotonic() - self.last_checked.get(channel_id, float("-inf")) < channel.get("interval", 60): continue
+        """Schedule independent lookups; apply every result on the UI thread."""
+        if self.stop_event.is_set():
+            return
+        self.lookup_pool.drain()
+        now = time.monotonic()
+        for channel in self.channels:
+            channel_id = channel["id"]
+            forced = channel_id in self.force_open_checks
+            initial = channel_id in self.initial_checks
+            if not initial and not forced and (not channel.get("enabled") or now - self.last_checked.get(channel_id, float("-inf")) < channel.get("interval", 60)):
+                continue
+            generation = self.channel_generations.get(channel_id, 0)
+            def complete(value, error, channel_id=channel_id, generation=generation, forced=forced):
+                if generation != self.channel_generations.get(channel_id, 0):
+                    return
+                current = next((item for item in self.channels if item["id"] == channel_id), None)
+                if current is None:
+                    return
                 self.last_checked[channel_id] = time.monotonic()
-                try:
-                    self._process_live_status(channel)
-                except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError, TimeoutError): self._ui(self._set_status, f"{channel.get('name', channel['id'])} 확인 실패 · 다음 주기에 재시도합니다.", True)
-            self.stop_event.wait(1)
+                if error:
+                    if forced:
+                        self.retry_open_checks.add(channel_id)
+                    self._set_status("방송 상태 확인 실패 · 이전 상태를 유지하고 다음 주기에 재시도합니다.", True)
+                    return
+                is_live, title = value
+                reopen = forced or channel_id in self.retry_open_checks
+                self.retry_open_checks.discard(channel_id)
+                was_live = self.was_live.get(channel_id, False)
+                self.was_live[channel_id] = is_live
+                self._record_live_status(channel_id, is_live, title)
+                if current.get("enabled"):
+                    if is_live and (reopen or not was_live):
+                        self._open_live(current, title)
+                    elif not is_live and was_live:
+                        self._close_finished_live(current)
+            if self.lookup_pool.submit(("live", channel_id), lambda channel_id=channel_id: get_live_status(channel_id), complete):
+                self.initial_checks.discard(channel_id)
+                self.force_open_checks.discard(channel_id)
+        self.root.after(100, self._monitor)
 
-    def _check_channel_now(self, channel: dict) -> None:
-        """Check a just-added channel immediately instead of waiting for the next cycle."""
-        try:
-            self._process_live_status(channel, added=True)
-        except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError, TimeoutError):
-            self._ui(self._set_status, f"{channel.get('name', channel['id'])} 등록 완료 · 상태 확인은 다음 주기에 재시도합니다.", True)
-
-    def _check_saved_channels_on_start(self) -> None:
-        """Show the current live state for every saved channel when the app opens."""
-        saved_channels = [dict(channel) for channel in self.channels]
-        if saved_channels:
-            self._ui(self._set_status, f"저장된 채널 {len(saved_channels)}개의 방송 상태를 확인 중…")
-        for channel in saved_channels:
-            if self.stop_event.is_set(): return
-            try:
-                self._process_live_status(channel)
-            except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError, TimeoutError):
-                self._ui(self._set_status, f"{channel.get('name', channel['id'])} 초기 확인 실패 · 다음 주기에 재시도합니다.", True)
-
-    def _process_live_status(self, channel: dict, added: bool = False) -> None:
-        is_live, title = get_live_status(channel["id"])
-        self._ui(self._record_live_status, channel["id"], is_live, title)
-        if is_live and not self.was_live.get(channel["id"], False): self.was_live[channel["id"]] = True; self._ui(self._open_live, channel, title)
-        elif not is_live:
-            was_live = self.was_live.get(channel["id"], False)
-            self.was_live[channel["id"]] = False
-            if was_live:
-                self._ui(self._close_finished_live, channel)
-            if added: self._ui(self._set_status, f"{channel.get('name', channel['id'])} 등록 완료 · 현재 오프라인")
+    def _invalidate_channel(self, channel_id):
+        self.channel_generations[channel_id] = self.channel_generations.get(channel_id, 0) + 1
+        self.was_live.pop(channel_id, None)
+        self.last_checked.pop(channel_id, None)
+        self.force_open_checks.discard(channel_id)
+        self.retry_open_checks.discard(channel_id)
 
     def _record_live_status(self, channel_id: str, is_live: bool, title: str) -> None:
         self.live_info[channel_id] = (is_live, title)
@@ -902,6 +1031,8 @@ class AutoChzzkApp:
 
     def _open_live(self, channel: dict, title: str) -> None:
         if not any(item["id"] == channel["id"] and item.get("enabled") for item in self.channels): return
+        if self.stop_event.is_set() or not self.live_info.get(channel["id"], (False, ""))[0]:
+            return
         remaining = self.allow_browser_open_after - time.monotonic()
         if remaining > 0:
             self._set_status("Chrome 방송 탭 상태를 확인하는 중입니다…")
@@ -951,7 +1082,22 @@ class AutoChzzkApp:
         self.status_value.set("")
         self.status_frame.pack_forget()
 
-    def _ui(self, callback, *args) -> None: self.root.after(0, callback, *args)
+    def _ui(self, callback, *args) -> None:
+        if hasattr(self, "stop_event") and self.stop_event.is_set():
+            return
+        self.ui_queue.put((callback, args))
+
+    def _drain_ui_queue(self) -> None:
+        if self.stop_event.is_set():
+            return
+        for _ in range(100):
+            if self.ui_queue.empty():
+                break
+            callback, args = self.ui_queue.get()
+            callback(*args)
+            if self.stop_event.is_set():
+                return
+        self.root.after(50, self._drain_ui_queue)
 
     def _create_tray_icon(self):
         if pystray is None: return None
@@ -974,11 +1120,20 @@ class AutoChzzkApp:
         self.root.withdraw()
         self._start_tray_icon()
 
-    def show_window(self, _icon=None, _item=None) -> None: self.root.after(0, self._restore_window)
+    def show_window(self, _icon=None, _item=None) -> None: self._ui(self._restore_window)
     def _restore_window(self) -> None: self.root.deiconify(); self.root.lift(); self.root.focus_force()
-    def quit_from_tray(self, _icon=None, _item=None) -> None: self.root.after(0, self.on_close)
+    def quit_from_tray(self, _icon=None, _item=None) -> None: self._ui(self.on_close)
     def on_close(self) -> None:
         self.stop_event.set()
+        secret = getattr(self, "_copied_pairing_secret", None)
+        if secret is not None:
+            try:
+                if self.root.clipboard_get() == secret:
+                    self.root.clipboard_clear()
+            except tk.TclError:
+                pass
+            self._copied_pairing_secret = None
+        self.lookup_pool.close()
         if self.extension_server is not None: self.extension_server.shutdown(); self.extension_server.server_close()
         clear_show_window_callback()
         if self.tray_icon is not None: self.tray_icon.stop()
@@ -995,10 +1150,9 @@ def main() -> None:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("LPRS1234.AutoChzzk")
         mutex = ctypes.windll.kernel32.CreateMutexW(None, False, MUTEX_NAME)
         if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
-            request = urllib.request.Request(f"http://127.0.0.1:{EXTENSION_PORT}/show-window", data=b"{}", method="POST")
             try:
-                urllib.request.urlopen(request, timeout=1).close()
-            except urllib.error.URLError:
+                request_show_window()
+            except (OSError, ValueError):
                 pass
             return
     root = tk.Tk()

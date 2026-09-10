@@ -6,17 +6,26 @@ import os
 from pathlib import Path
 
 
+class ProfileReadError(OSError):
+    """Profile discovery failed; existing selection must be retained."""
+
+
 def get_chrome_profiles() -> list[dict[str, str]]:
     local_state = Path(os.environ.get("LOCALAPPDATA", "")) / "Google" / "Chrome" / "User Data" / "Local State"
     user_data_dir = local_state.parent
     try:
-        info_cache = json.loads(local_state.read_text(encoding="utf-8")).get("profile", {}).get("info_cache", {})
-    except (OSError, json.JSONDecodeError):
-        info_cache = {}
+        data = json.loads(local_state.read_text(encoding="utf-8"))
+        info_cache = data["profile"]["info_cache"]
+        if not isinstance(info_cache, dict):
+            raise ValueError("Invalid profile cache")
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise ProfileReadError("Chrome 프로필 정보를 읽지 못했습니다.") from exc
 
     profiles = []
     for directory, info in info_cache.items():
         if not isinstance(directory, str) or not isinstance(info, dict):
+            continue
+        if directory in (".", "..") or any(char in directory for char in "/\\:"):
             continue
         if not (user_data_dir / directory).is_dir():
             continue
@@ -30,5 +39,18 @@ def get_chrome_profiles() -> list[dict[str, str]]:
                 "email": email,
             }
         )
+    names = [profile["name"] for profile in profiles]
+    used = set()
+    for profile in profiles:
+        base = profile["name"]
+        if names.count(base) > 1:
+            base = f"{base} ({profile['directory']})"
+        label = base
+        number = 2
+        while label in used:
+            label = f"{base} [{number}]"
+            number += 1
+        profile["name"] = label
+        used.add(label)
     return profiles or [{"directory": "Default", "name": "기본 프로필", "gaia_id": "", "email": ""}]
 
