@@ -49,6 +49,7 @@ function stopAutoplayRetries() {
   if (autoplayStopTimer !== null) clearTimeout(autoplayStopTimer);
   autoplayRetryTimer = null;
   autoplayStopTimer = null;
+  autoplayRequested = false;
 }
 
 function requestAutoplay() {

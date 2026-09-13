@@ -108,3 +108,17 @@ test("duplicate autoplay messages do not start duplicate retry loops", () => {
   assert.equal(content.intervals.filter((timer) => timer.delay === 1_000).length, 1);
   assert.equal(content.timeouts.filter((timer) => timer.delay === 30_000).length, 1);
 });
+
+test("autoplay can be requested again after the previous retry window ends", () => {
+  const content = makeContent();
+  content.send({ type: "attempt-autoplay" });
+  const firstRetryTimer = content.intervals.find((timer) => timer.delay === 1_000);
+  const firstStopTimer = content.timeouts.find((timer) => timer.delay === 30_000);
+
+  firstStopTimer.callback();
+  content.send({ type: "attempt-autoplay" });
+
+  assert.equal(firstRetryTimer.cleared, true);
+  assert.equal(content.intervals.filter((timer) => timer.delay === 1_000).length, 2);
+  assert.equal(content.timeouts.filter((timer) => timer.delay === 30_000).length, 2);
+});

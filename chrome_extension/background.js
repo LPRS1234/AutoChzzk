@@ -260,8 +260,10 @@ async function executeOpenCommands(commands) {
     if (command.action !== "open") continue;
     const existing = await chrome.tabs.query({ url: [command.url] });
     if (existing.length === 0) {
-      // active:false keeps the current app/window in front of Chrome.
-      const tab = await chrome.tabs.create({ url: command.url, active: false });
+      // CHZZK delays player initialization in a newly created background tab.
+      // Selecting it inside Chrome lets the player mount without requiring the
+      // user to find and click the tab first.
+      const tab = await chrome.tabs.create({ url: command.url, active: true });
       if (typeof tab.id === "number") {
         await rememberAutoOpenedTab(tab.id);
         requestAutoplay(tab.id);
@@ -333,7 +335,10 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   forgetAutoOpenedTab(tabId).catch(() => {});
   reportOpenChzzkLives();
 });
-chrome.tabs.onActivated.addListener(reportOpenChzzkLives);
+chrome.tabs.onActivated.addListener(({ tabId }) => {
+  reportOpenChzzkLives();
+  requestAutoplayIfAutoOpened(tabId).catch(() => {});
+});
 chrome.windows.onFocusChanged.addListener(reportOpenChzzkLives);
 chrome.alarms.onAlarm.addListener((alarm) => { if (alarm.name === "report-open-chzzk-lives") reportOpenChzzkLives(); });
 
