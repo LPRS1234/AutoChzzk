@@ -11,7 +11,7 @@ const command = (number, action = "open") => ({ id: number.toString(16).padStart
 const reloadCommand = (number, version) => ({ id: number.toString(16).padStart(32, "0"), action: "reload", version });
 
 function makeWorker({ storage = {}, localStorage = { pairingSecret: secret, clientId: "synthetic-client" }, version = "2.0.0", fetchImpl, timerImpl } = {}) {
-  const calls = { identity: 0, created: 0, createdTabs: [], removed: [], requests: [], messages: [], restricted: false, reloads: 0 };
+  const calls = { identity: 0, created: 0, createdTabs: [], injections: [], removed: [], requests: [], messages: [], restricted: false, reloads: 0 };
   const event = () => ({ addListener() {} });
   let now = Date.now();
   const chrome = {
@@ -34,6 +34,7 @@ function makeWorker({ storage = {}, localStorage = { pairingSecret: secret, clie
         async remove(key) { delete storage[key]; },
       },
     },
+    scripting: { async executeScript(injection) { calls.injections.push(injection); } },
     tabs: {
       async query() { return []; }, async create(options) { calls.created++; calls.createdTabs.push(options); return { id: calls.created }; },
       async remove(ids) { calls.removed.push(...ids); }, async sendMessage(tabId, message) { calls.messages.push({ tabId, message }); },
@@ -112,7 +113,7 @@ test("only exact broadcast URLs and validated commands reach Chrome", async () =
   assert.equal(worker.calls.created, 1);
 });
 
-test("an automatic broadcast open selects the new tab so CHZZK initializes its player", async () => {
+test("an automatic broadcast open keeps the user's current tab selected", async () => {
   const worker = makeWorker();
   worker.context.commands = [command(1)];
 
@@ -120,7 +121,7 @@ test("an automatic broadcast open selects the new tab so CHZZK initializes its p
 
   assert.equal(worker.calls.createdTabs.length, 1);
   assert.equal(worker.calls.createdTabs[0].url, url);
-  assert.equal(worker.calls.createdTabs[0].active, true);
+  assert.equal(worker.calls.createdTabs[0].active, false);
 });
 
 test("thousands of acknowledged commands keep request and dedup state bounded", async () => {
@@ -181,6 +182,11 @@ test("autoplay request survives a service worker restart for an app-opened tab",
   assert.equal(worker.calls.messages.length, 1);
   assert.equal(worker.calls.messages[0].tabId, 10);
   assert.equal(worker.calls.messages[0].message.type, "attempt-autoplay");
+  assert.equal(worker.calls.injections.length, 1);
+  assert.equal(worker.calls.injections[0].target.tabId, 10);
+  assert.equal(worker.calls.injections[0].files[0], "autoplay_page.js");
+  assert.equal(worker.calls.injections[0].world, "MAIN");
+  assert.equal(worker.calls.injections[0].injectImmediately, true);
 });
 
 test("reload applies updated files once and restores app-opened tab ownership", async () => {

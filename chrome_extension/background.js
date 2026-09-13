@@ -127,7 +127,17 @@ async function authenticatedPost(path, payload, key) {
 }
 let reporting = false;
 
-function requestAutoplay(tabId) {
+async function requestAutoplay(tabId) {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ["autoplay_page.js"],
+      world: "MAIN",
+      injectImmediately: true,
+    });
+  } catch {
+    // Navigation may not have committed yet. The completed-tab event retries.
+  }
   chrome.tabs.sendMessage(tabId, { type: "attempt-autoplay" }).catch(() => {});
 }
 
@@ -144,7 +154,7 @@ async function rememberAutoOpenedTab(tabId) {
 
 async function requestAutoplayIfAutoOpened(tabId) {
   const tabIds = await getAutoOpenedTabIds();
-  if (tabIds.has(tabId)) requestAutoplay(tabId);
+  if (tabIds.has(tabId)) await requestAutoplay(tabId);
 }
 
 async function forgetAutoOpenedTab(tabId) {
@@ -260,13 +270,12 @@ async function executeOpenCommands(commands) {
     if (command.action !== "open") continue;
     const existing = await chrome.tabs.query({ url: [command.url] });
     if (existing.length === 0) {
-      // CHZZK delays player initialization in a newly created background tab.
-      // Selecting it inside Chrome lets the player mount without requiring the
-      // user to find and click the tab first.
-      const tab = await chrome.tabs.create({ url: command.url, active: true });
+      // Keep the user's current tab selected. A main-world helper wakes CHZZK's
+      // player without bringing this new broadcast tab to the foreground.
+      const tab = await chrome.tabs.create({ url: command.url, active: false });
       if (typeof tab.id === "number") {
         await rememberAutoOpenedTab(tab.id);
-        requestAutoplay(tab.id);
+        requestAutoplay(tab.id).catch(() => {});
       }
     }
     completedCommandIds.add(command.id);
