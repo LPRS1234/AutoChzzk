@@ -125,7 +125,6 @@ async function authenticatedPost(path, payload, key) {
     clearTimeout(timer);
   }
 }
-const autoPlayTabIds = new Set();
 let reporting = false;
 
 function requestAutoplay(tabId) {
@@ -141,6 +140,11 @@ async function rememberAutoOpenedTab(tabId) {
   const tabIds = await getAutoOpenedTabIds();
   tabIds.add(tabId);
   await chrome.storage.session.set({ autoOpenedTabIds: [...tabIds] });
+}
+
+async function requestAutoplayIfAutoOpened(tabId) {
+  const tabIds = await getAutoOpenedTabIds();
+  if (tabIds.has(tabId)) requestAutoplay(tabId);
 }
 
 async function forgetAutoOpenedTab(tabId) {
@@ -259,7 +263,6 @@ async function executeOpenCommands(commands) {
       // active:false keeps the current app/window in front of Chrome.
       const tab = await chrome.tabs.create({ url: command.url, active: false });
       if (typeof tab.id === "number") {
-        autoPlayTabIds.add(tab.id);
         await rememberAutoOpenedTab(tab.id);
         requestAutoplay(tab.id);
       }
@@ -324,10 +327,7 @@ chrome.runtime.onMessage.addListener((message) => {
 });
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   reportOpenChzzkLives();
-  if (autoPlayTabIds.has(tabId) && changeInfo.status === "complete") {
-    autoPlayTabIds.delete(tabId);
-    requestAutoplay(tabId);
-  }
+  if (changeInfo.status === "complete") requestAutoplayIfAutoOpened(tabId).catch(() => {});
 });
 chrome.tabs.onRemoved.addListener((tabId) => {
   forgetAutoOpenedTab(tabId).catch(() => {});

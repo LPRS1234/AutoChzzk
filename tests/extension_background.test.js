@@ -11,7 +11,7 @@ const command = (number, action = "open") => ({ id: number.toString(16).padStart
 const reloadCommand = (number, version) => ({ id: number.toString(16).padStart(32, "0"), action: "reload", version });
 
 function makeWorker({ storage = {}, localStorage = { pairingSecret: secret, clientId: "synthetic-client" }, version = "2.0.0", fetchImpl, timerImpl } = {}) {
-  const calls = { identity: 0, created: 0, removed: [], requests: [], restricted: false, reloads: 0 };
+  const calls = { identity: 0, created: 0, removed: [], requests: [], messages: [], restricted: false, reloads: 0 };
   const event = () => ({ addListener() {} });
   let now = Date.now();
   const chrome = {
@@ -36,7 +36,7 @@ function makeWorker({ storage = {}, localStorage = { pairingSecret: secret, clie
     },
     tabs: {
       async query() { return []; }, async create() { calls.created++; return { id: calls.created }; },
-      async remove(ids) { calls.removed.push(...ids); }, async sendMessage() {},
+      async remove(ids) { calls.removed.push(...ids); }, async sendMessage(tabId, message) { calls.messages.push({ tabId, message }); },
       onUpdated: event(), onRemoved: event(), onActivated: event(),
     },
     windows: { async getLastFocused() { return { focused: true }; }, onFocusChanged: event() },
@@ -159,6 +159,17 @@ test("close removes only app-opened tabs", async () => {
   worker.context.commands = [command(1, "close")];
   await worker.run("executeOpenCommands(commands)");
   assert.deepEqual(worker.calls.removed, [10]);
+});
+
+test("autoplay request survives a service worker restart for an app-opened tab", async () => {
+  const worker = makeWorker({ storage: { autoOpenedTabIds: [10] } });
+
+  await worker.run("requestAutoplayIfAutoOpened(10)");
+  await worker.run("requestAutoplayIfAutoOpened(11)");
+
+  assert.equal(worker.calls.messages.length, 1);
+  assert.equal(worker.calls.messages[0].tabId, 10);
+  assert.equal(worker.calls.messages[0].message.type, "attempt-autoplay");
 });
 
 test("reload applies updated files once and restores app-opened tab ownership", async () => {

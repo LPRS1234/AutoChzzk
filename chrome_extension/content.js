@@ -14,29 +14,49 @@ heartbeat();
 setInterval(heartbeat, 2000);
 
 let autoplayRequested = false;
+let autoplayRetryTimer = null;
+let autoplayStopTimer = null;
+
+const AUTOPLAY_RETRY_INTERVAL_MS = 1_000;
+const AUTOPLAY_RETRY_DURATION_MS = 30_000;
 
 function tryAutoplay() {
   const video = document.querySelector("video");
   if (!video || !video.paused) return;
 
+  // Chrome always permits muted autoplay, including in a background tab.
+  // Keep all three values aligned because the CHZZK player may inspect either
+  // the DOM attribute or the current/default media properties while mounting.
+  video.muted = true;
+  video.defaultMuted = true;
+  video.autoplay = true;
+  video.setAttribute("muted", "");
+
   const playButton = [...document.querySelectorAll("button")].find((button) => {
-    const label = button.getAttribute("aria-label") || button.getAttribute("title") || "";
-    return /^(재생|play)$/i.test(label.trim());
+    const label = button.getAttribute("aria-label") || button.getAttribute("title") || button.textContent || "";
+    return /^(재생|재생하기|play)$/i.test(label.trim());
   });
   playButton?.click();
   const playRequest = video.play();
   playRequest?.catch(() => {
-    // Chrome can block audible background autoplay. Retrying after the player
-    // finishes loading is still useful for sites that allow it.
+    // The player may not have attached its stream yet. The timer below retries
+    // while the CHZZK page finishes mounting.
   });
+}
+
+function stopAutoplayRetries() {
+  if (autoplayRetryTimer !== null) clearInterval(autoplayRetryTimer);
+  if (autoplayStopTimer !== null) clearTimeout(autoplayStopTimer);
+  autoplayRetryTimer = null;
+  autoplayStopTimer = null;
 }
 
 function requestAutoplay() {
   if (autoplayRequested) return;
   autoplayRequested = true;
-  for (const delay of [0, 700, 1_800, 3_500, 6_000]) {
-    setTimeout(tryAutoplay, delay);
-  }
+  autoplayRetryTimer = setInterval(tryAutoplay, AUTOPLAY_RETRY_INTERVAL_MS);
+  autoplayStopTimer = setTimeout(stopAutoplayRetries, AUTOPLAY_RETRY_DURATION_MS);
+  tryAutoplay();
 }
 
 chrome.runtime.onMessage.addListener((message) => {
