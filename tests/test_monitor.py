@@ -97,6 +97,58 @@ class AppMonitorTests(unittest.TestCase):
         self.assertEqual(self.app.channels[0]["interval"], 60)
         self.app._refresh_list.assert_not_called()
 
+    def test_live_status_update_does_not_rebuild_channel_list(self):
+        app = AutoChzzkApp.__new__(AutoChzzkApp)
+        app.live_info = {}
+        app.live_status_widgets = {"a": Mock()}
+        app._refresh_list = Mock()
+
+        app._record_live_status("a", False, "")
+        app._record_live_status("a", False, "")
+
+        app.live_status_widgets["a"].set_text.assert_called_once_with(
+            "현재 방송 중이 아닙니다.", fg=app.MUTED
+        )
+        app._refresh_list.assert_not_called()
+
+    def test_interval_update_changes_only_its_label_and_editor(self):
+        app = AutoChzzkApp.__new__(AutoChzzkApp)
+        app.channels = [{"id": "a", "name": "Synthetic", "enabled": True, "interval": 60}]
+        app.last_checked = {"a": 1}
+        app.editing_channel_id = "a"
+        app.interval_labels = {"a": Mock()}
+        app.interval_editors = {"a": Mock()}
+        app._save_channels = Mock(return_value=True)
+        app._set_status = Mock()
+        app._refresh_list = Mock()
+
+        app.update_interval("a", "90")
+
+        self.assertEqual(app.channels[0]["interval"], 90)
+        self.assertNotIn("a", app.last_checked)
+        self.assertIsNone(app.editing_channel_id)
+        app.interval_labels["a"].configure.assert_called_once_with(text="90초")
+        self.assertNotIn("a", app.interval_editors)
+        app._refresh_list.assert_not_called()
+
+    def test_interval_editor_switches_without_rebuilding_channel_list(self):
+        app = AutoChzzkApp.__new__(AutoChzzkApp)
+        first = {"id": "a", "interval": 60}
+        second = {"id": "b", "interval": 90}
+        previous_editor = Mock()
+        app.channels = [first, second]
+        app.editing_channel_id = "a"
+        app.interval_editors = {"a": previous_editor}
+        app._make_interval_editor = Mock()
+        app._refresh_list = Mock()
+
+        app.show_interval_editor("b")
+
+        previous_editor.destroy.assert_called_once()
+        self.assertEqual(app.editing_channel_id, "b")
+        app._make_interval_editor.assert_called_once_with(second)
+        app._refresh_list.assert_not_called()
+
     def test_failed_reconnect_lookup_retries_open_on_next_normal_check(self):
         self.app.force_open_checks.add("a")
         self.app._monitor()

@@ -89,6 +89,10 @@ class AutoChzzkApp:
         self.channels = self._load_channels()
         self.was_live: dict[str, bool] = {}
         self.live_info: dict[str, tuple[bool, str]] = {}
+        self.channel_rows: dict[str, tk.Frame] = {}
+        self.interval_labels: dict[str, tk.Label] = {}
+        self.interval_editors: dict[str, tk.Frame] = {}
+        self.live_status_widgets: dict[str, MarqueeText] = {}
         self.watching_indicators: dict[str, tk.Label] = {}
         self.editing_channel_id: str | None = None
         self.last_checked = {}
@@ -876,6 +880,10 @@ class AutoChzzkApp:
 
     def _refresh_list(self) -> None:
         for child in self.list_frame.winfo_children(): child.destroy()
+        self.channel_rows = {}
+        self.interval_labels = {}
+        self.interval_editors = {}
+        self.live_status_widgets = {}
         self.watching_indicators: dict[str, tk.Label] = {}
         enabled_count = sum(bool(channel.get("enabled")) for channel in self.channels)
         self.count_label.configure(text=f"등록 채널 {len(self.channels)}개 · 감지 중 {enabled_count}개")
@@ -899,12 +907,15 @@ class AutoChzzkApp:
 
     def _make_channel_row(self, channel: dict) -> None:
         row = tk.Frame(self.list_frame, bg=self.INPUT, padx=12, pady=9); row.pack(fill="x", pady=4)
+        self.channel_rows[channel["id"]] = row
         actions = tk.Frame(row, bg=self.INPUT)
         actions.pack(side="right", anchor="n")
         active = bool(channel.get("enabled")); label = "감지 ON" if active else "감지 OFF"
         tk.Button(actions, text=label, command=lambda value=channel["id"]: self.toggle_channel(value), relief="flat", bd=0, cursor="hand2", padx=9, pady=5, font=("Malgun Gothic", 8, "bold"), bg=self.ACCENT if active else "#454954", fg="#08251D" if active else self.TEXT, activebackground="#38EDBB" if active else "#5A5F6B").pack(side="right", padx=(7, 0))
         ttk.Button(actions, text="삭제", style="Small.TButton", command=lambda value=channel["id"], name=channel.get("name") or channel["id"]: self.confirm_remove_channel(value, name), cursor="hand2").pack(side="right")
-        tk.Label(actions, text=f"{channel.get('interval', 60)}초", fg=self.MUTED, bg=self.INPUT, font=("Consolas", 9)).pack(side="right", padx=(0, 5))
+        interval_label = tk.Label(actions, text=f"{channel.get('interval', 60)}초", fg=self.MUTED, bg=self.INPUT, font=("Consolas", 9))
+        interval_label.pack(side="right", padx=(0, 5))
+        self.interval_labels[channel["id"]] = interval_label
         ttk.Button(actions, text="간격 수정", style="Small.TButton", command=lambda value=channel["id"]: self.show_interval_editor(value), cursor="hand2").pack(side="right", padx=(0, 8))
         details = tk.Frame(row, bg=self.INPUT)
         details.pack(side="left", fill="both", expand=True, padx=(0, 10))
@@ -914,18 +925,34 @@ class AutoChzzkApp:
         watching_indicator.pack(side="left", padx=(0, 4))
         self.watching_indicators[channel["id"]] = watching_indicator
         MarqueeText(name_row, channel.get("name") or channel["id"], fg=self.TEXT, bg=self.INPUT, font=("Malgun Gothic", 10, "bold")).pack(side="left", fill="x", expand=True)
-        live_state = self.live_info.get(channel["id"])
+        live_text, live_color = self._live_status_display(channel["id"])
+        live_status = MarqueeText(details, live_text, fg=live_color, bg=self.INPUT, font=("Malgun Gothic", 8), height=20)
+        live_status.pack(fill="x", pady=(2, 0))
+        self.live_status_widgets[channel["id"]] = live_status
+
+    def _live_status_display(self, channel_id: str) -> tuple[str, str]:
+        live_state = self.live_info.get(channel_id)
         if live_state is None:
-            live_text, live_color = "방송 상태 확인 중…", self.MUTED
-        elif live_state[0]:
-            live_text, live_color = f"방송 중 · {live_state[1]}", self.ACCENT
-        else:
-            live_text, live_color = "현재 방송 중이 아닙니다.", self.MUTED
-        MarqueeText(details, live_text, fg=live_color, bg=self.INPUT, font=("Malgun Gothic", 8), height=20).pack(fill="x", pady=(2, 0))
+            return "방송 상태 확인 중…", self.MUTED
+        if live_state[0]:
+            return f"방송 중 · {live_state[1]}", self.ACCENT
+        return "현재 방송 중이 아닙니다.", self.MUTED
+
+    def _update_live_status_widget(self, channel_id: str) -> None:
+        live_status = self.live_status_widgets.get(channel_id)
+        if live_status is None or not live_status.winfo_exists():
+            return
+        live_text, live_color = self._live_status_display(channel_id)
+        live_status.set_text(live_text, fg=live_color)
 
     def _make_interval_editor(self, channel: dict) -> None:
         editor = tk.Frame(self.list_frame, bg="#373B45", padx=13, pady=10)
-        editor.pack(fill="x", pady=(0, 7))
+        row = self.channel_rows.get(channel["id"])
+        pack_options = {"fill": "x", "pady": (0, 7)}
+        if row is not None:
+            pack_options["after"] = row
+        editor.pack(**pack_options)
+        self.interval_editors[channel["id"]] = editor
         tk.Label(editor, text="확인 간격", fg=self.TEXT, bg="#373B45", font=("Malgun Gothic", 9, "bold")).pack(side="left")
         tk.Label(editor, text="최소 15초", fg=self.MUTED, bg="#373B45", font=("Malgun Gothic", 8)).pack(side="left", padx=(7, 10))
         interval_value = tk.StringVar(value=str(channel.get("interval", 60)))
@@ -938,8 +965,20 @@ class AutoChzzkApp:
         interval_entry.select_range(0, "end")
 
     def show_interval_editor(self, channel_id: str) -> None:
-        self.editing_channel_id = None if self.editing_channel_id == channel_id else channel_id
-        self._refresh_list()
+        previous_id = self.editing_channel_id
+        if previous_id is not None:
+            previous_editor = self.interval_editors.pop(previous_id, None)
+            if previous_editor is not None:
+                previous_editor.destroy()
+        if previous_id == channel_id:
+            self.editing_channel_id = None
+            return
+        channel = next((item for item in self.channels if item["id"] == channel_id), None)
+        if channel is None:
+            self.editing_channel_id = None
+            return
+        self.editing_channel_id = channel_id
+        self._make_interval_editor(channel)
 
     def toggle_channel(self, channel_id: str) -> None:
         channels = [dict(item) for item in self.channels]
@@ -986,7 +1025,12 @@ class AutoChzzkApp:
         self.channels = channels
         self.last_checked.pop(channel_id, None)
         self.editing_channel_id = None
-        self._refresh_list()
+        interval_label = self.interval_labels.get(channel_id)
+        if interval_label is not None and interval_label.winfo_exists():
+            interval_label.configure(text=f"{interval}초")
+        editor = self.interval_editors.pop(channel_id, None)
+        if editor is not None:
+            editor.destroy()
         self._set_status(f"{channel_name} 확인 간격을 {interval}초로 적용했습니다.")
 
     def _monitor(self) -> None:
@@ -1038,8 +1082,11 @@ class AutoChzzkApp:
         self.retry_open_checks.discard(channel_id)
 
     def _record_live_status(self, channel_id: str, is_live: bool, title: str) -> None:
-        self.live_info[channel_id] = (is_live, title)
-        self._refresh_list()
+        live_state = (is_live, title)
+        if self.live_info.get(channel_id) == live_state:
+            return
+        self.live_info[channel_id] = live_state
+        self._update_live_status_widget(channel_id)
 
     def _close_finished_live(self, channel: dict) -> None:
         """Close only tabs that the extension previously opened for this broadcast."""
