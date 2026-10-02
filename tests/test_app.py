@@ -1,5 +1,6 @@
 from queue import SimpleQueue
 import threading
+import tkinter as tk
 import unittest
 from unittest.mock import Mock, patch
 
@@ -156,3 +157,101 @@ class AppIntegrationTests(unittest.TestCase):
         app.recheck_extension_status()
 
         self.assertEqual(app.extension_reload_deadline, 123)
+
+
+class ChannelToggleUITests(unittest.TestCase):
+    def setUp(self):
+        try:
+            self.root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f'Tk display unavailable: {error}')
+        self.root.withdraw()
+        self.addCleanup(self.root.destroy)
+        app = self.app = AutoChzzkApp.__new__(AutoChzzkApp)
+        app.root = self.root
+        app._configure_styles()
+        app.channels = [
+            dict(id=f'{index:032x}', name=f'Synthetic {index}', enabled=index != 1,
+                 interval=60, extra='preserved')
+            for index in range(12)
+        ]
+        self.channel_id = app.channels[9]['id']
+        app.live_info = {self.channel_id: (True, 'Synthetic live title')}
+        app.was_live = {self.channel_id: True}
+        app.last_checked = {self.channel_id: 1}
+        app.force_open_checks = {self.channel_id}
+        app.retry_open_checks = {self.channel_id}
+        app.channel_generations = {}
+        app.editing_channel_id = None
+        app._save_channels = Mock(return_value=True)
+        app.count_label = tk.Label(self.root)
+        app.canvas = tk.Canvas(self.root, highlightthickness=0)
+        app.canvas.place(x=0, y=0, width=600, height=230)
+        app.list_frame = tk.Frame(app.canvas)
+        app.canvas.create_window((0, 0), window=app.list_frame, anchor='nw', width=600)
+        app.list_frame.bind('<Configure>', lambda event: app.canvas.configure(
+            scrollregion=app.canvas.bbox('all')))
+        app._refresh_list()
+        self.root.update_idletasks()
+        app.canvas.yview_moveto(0.55)
+        self.button = next(
+            widget for widget in app.channel_rows[self.channel_id].winfo_children()[0].winfo_children()
+            if isinstance(widget, tk.Button)
+        )
+
+    def test_toggle_preserves_rows_and_scroll_while_updating_detection(self):
+        app = self.app
+        rows = dict(app.channel_rows)
+        live_status = app.live_status_widgets[self.channel_id]
+        scroll = app.canvas.yview()
+        self.assertGreater(scroll[0], 0)
+        for enabled, label, count in [(False, '감지 OFF', 10), (True, '감지 ON', 11)]:
+            self.button.invoke()
+            self.root.update_idletasks()
+            self.assertEqual(app.channel_rows, rows)
+            self.assertEqual(app.canvas.yview(), scroll)
+            self.assertEqual(self.button.cget('text'), label)
+            self.assertEqual(self.button.cget('bg'), app.ACCENT if enabled else '#454954')
+            self.assertEqual(self.button.cget('fg'), '#08251D' if enabled else app.TEXT)
+            self.assertEqual(self.button.cget('activebackground'), '#38EDBB' if enabled else '#5A5F6B')
+            self.assertEqual(app.count_label.cget('text'), f'등록 채널 12개 · 감지 중 {count}개')
+            self.assertEqual(app.channels[9]['enabled'], enabled)
+            self.assertEqual(app.channels[9]['extra'], 'preserved')
+            self.assertIs(app.live_status_widgets[self.channel_id], live_status)
+        self.assertEqual(app.channel_generations[self.channel_id], 2)
+        self.assertNotIn(self.channel_id, app.was_live)
+        self.assertNotIn(self.channel_id, app.last_checked)
+        self.assertNotIn(self.channel_id, app.force_open_checks)
+        self.assertNotIn(self.channel_id, app.retry_open_checks)
+
+    def test_toggle_keeps_unsaved_interval_entry(self):
+        app = self.app
+        app.show_interval_editor(self.channel_id)
+        editor = app.interval_editors[self.channel_id]
+        entry = next(widget for widget in editor.winfo_children() if isinstance(widget, tk.Entry))
+        entry.delete(0, 'end')
+        entry.insert(0, '125')
+
+        self.button.invoke()
+        self.root.update_idletasks()
+
+        self.assertIs(app.interval_editors[self.channel_id], editor)
+        self.assertEqual(entry.get(), '125')
+        self.assertEqual(app.editing_channel_id, self.channel_id)
+
+    def test_failed_save_keeps_detection_and_display_unchanged(self):
+        app = self.app
+        app._save_channels.return_value = False
+        channels = app.channels
+        rows = dict(app.channel_rows)
+        scroll = app.canvas.yview()
+
+        self.button.invoke()
+        self.root.update_idletasks()
+
+        self.assertIs(app.channels, channels)
+        self.assertEqual(app.channel_rows, rows)
+        self.assertEqual(app.canvas.yview(), scroll)
+        self.assertEqual(self.button.cget('text'), '감지 ON')
+        self.assertEqual(app.count_label.cget('text'), '등록 채널 12개 · 감지 중 11개')
+        self.assertEqual(app.channel_generations, {})

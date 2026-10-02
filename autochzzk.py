@@ -90,6 +90,7 @@ class AutoChzzkApp:
         self.was_live: dict[str, bool] = {}
         self.live_info: dict[str, tuple[bool, str]] = {}
         self.channel_rows: dict[str, tk.Frame] = {}
+        self.detection_buttons: dict[str, tk.Button] = {}
         self.interval_labels: dict[str, tk.Label] = {}
         self.interval_editors: dict[str, tk.Frame] = {}
         self.live_status_widgets: dict[str, MarqueeText] = {}
@@ -881,17 +882,21 @@ class AutoChzzkApp:
     def _refresh_list(self) -> None:
         for child in self.list_frame.winfo_children(): child.destroy()
         self.channel_rows = {}
+        self.detection_buttons = {}
         self.interval_labels = {}
         self.interval_editors = {}
         self.live_status_widgets = {}
         self.watching_indicators: dict[str, tk.Label] = {}
-        enabled_count = sum(bool(channel.get("enabled")) for channel in self.channels)
-        self.count_label.configure(text=f"등록 채널 {len(self.channels)}개 · 감지 중 {enabled_count}개")
+        self._update_channel_count()
         if not self.channels: tk.Label(self.list_frame, text="아직 등록된 채널이 없습니다.", fg=self.MUTED, bg=self.SURFACE, font=("Malgun Gothic", 10), pady=28).pack()
         for channel in self.channels:
             self._make_channel_row(channel)
             if self.editing_channel_id == channel["id"]: self._make_interval_editor(channel)
         self._update_monitor_status()
+
+    def _update_channel_count(self) -> None:
+        enabled_count = sum(bool(channel.get("enabled")) for channel in self.channels)
+        self.count_label.configure(text=f"등록 채널 {len(self.channels)}개 · 감지 중 {enabled_count}개")
 
     def _update_monitor_status(self) -> None:
         """Refresh the watching indicators without showing an idle footer message."""
@@ -911,7 +916,9 @@ class AutoChzzkApp:
         actions = tk.Frame(row, bg=self.INPUT)
         actions.pack(side="right", anchor="n")
         active = bool(channel.get("enabled")); label = "감지 ON" if active else "감지 OFF"
-        tk.Button(actions, text=label, command=lambda value=channel["id"]: self.toggle_channel(value), relief="flat", bd=0, cursor="hand2", padx=9, pady=5, font=("Malgun Gothic", 8, "bold"), bg=self.ACCENT if active else "#454954", fg="#08251D" if active else self.TEXT, activebackground="#38EDBB" if active else "#5A5F6B").pack(side="right", padx=(7, 0))
+        detection_button = tk.Button(actions, text=label, command=lambda value=channel["id"]: self.toggle_channel(value), relief="flat", bd=0, cursor="hand2", padx=9, pady=5, font=("Malgun Gothic", 8, "bold"), bg=self.ACCENT if active else "#454954", fg="#08251D" if active else self.TEXT, activebackground="#38EDBB" if active else "#5A5F6B")
+        detection_button.pack(side="right", padx=(7, 0))
+        self.detection_buttons[channel["id"]] = detection_button
         ttk.Button(actions, text="삭제", style="Small.TButton", command=lambda value=channel["id"], name=channel.get("name") or channel["id"]: self.confirm_remove_channel(value, name), cursor="hand2").pack(side="right")
         interval_label = tk.Label(actions, text=f"{channel.get('interval', 60)}초", fg=self.MUTED, bg=self.INPUT, font=("Consolas", 9))
         interval_label.pack(side="right", padx=(0, 5))
@@ -989,7 +996,16 @@ class AutoChzzkApp:
         if self._save_channels(channels):
             self.channels = channels
             self._invalidate_channel(channel_id)
-            self._refresh_list()
+            detection_button = self.detection_buttons.get(channel_id)
+            if detection_button is not None and detection_button.winfo_exists():
+                active = next((bool(item.get("enabled")) for item in channels if item["id"] == channel_id), False)
+                detection_button.configure(
+                    text="감지 ON" if active else "감지 OFF",
+                    bg=self.ACCENT if active else "#454954",
+                    fg="#08251D" if active else self.TEXT,
+                    activebackground="#38EDBB" if active else "#5A5F6B",
+                )
+            self._update_channel_count()
 
     def confirm_remove_channel(self, channel_id: str, channel_name: str) -> None:
         self._show_app_dialog("채널 삭제", f"‘{channel_name}’ 채널을 삭제하시겠습니까?", "삭제", lambda: self.remove_channel(channel_id), "취소")

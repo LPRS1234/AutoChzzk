@@ -4,6 +4,12 @@ from __future__ import annotations
 
 RELEASE_NOTES: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
+        "v2.1.5",
+        (
+            "채널 감지 ON/OFF를 변경할 때 목록이 깜빡이거나 스크롤이 위로 이동하는 문제를 수정했습니다.",
+        ),
+    ),
+    (
         "v2.1.4",
         (
             "방송 상태 확인과 채널별 확인 간격 변경 시 채널 목록이 깜빡이지 않도록 개선했습니다.",
