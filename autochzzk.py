@@ -57,7 +57,7 @@ from autochzzk_core.updater import (
     launch_installer,
     verify_installer,
 )
-from autochzzk_core.widgets import MarqueeText
+from autochzzk_core.widgets import AnimatedToggle, MarqueeText
 
 try:
     import pystray
@@ -90,7 +90,7 @@ class AutoChzzkApp:
         self.was_live: dict[str, bool] = {}
         self.live_info: dict[str, tuple[bool, str]] = {}
         self.channel_rows: dict[str, tk.Frame] = {}
-        self.detection_buttons: dict[str, tk.Button] = {}
+        self.detection_buttons: dict[str, AnimatedToggle] = {}
         self.interval_labels: dict[str, tk.Label] = {}
         self.interval_editors: dict[str, tk.Frame] = {}
         self.live_status_widgets: dict[str, MarqueeText] = {}
@@ -167,7 +167,7 @@ class AutoChzzkApp:
         style.map("DialogDark.TButton", background=[("active", "#50545F")])
         style.configure("Dark.TCombobox", fieldbackground=self.INPUT, background="#3A3D47", foreground=self.TEXT, bordercolor="#40444F", lightcolor="#40444F", darkcolor="#40444F", arrowcolor=self.TEXT, padding=5)
         style.map("Dark.TCombobox", fieldbackground=[("readonly", self.INPUT), ("focus", self.INPUT)], background=[("active", "#50545F")], bordercolor=[("focus", self.ACCENT)], arrowcolor=[("active", self.ACCENT)])
-        style.configure("Dark.Vertical.TScrollbar", background="#3A3D47", troughcolor=self.SURFACE, bordercolor=self.SURFACE, arrowcolor=self.MUTED, arrowsize=0)
+        style.configure("Dark.Vertical.TScrollbar", background="#3A3D47", troughcolor=self.SURFACE, bordercolor=self.SURFACE, lightcolor=self.SURFACE, darkcolor=self.SURFACE, arrowcolor=self.MUTED, arrowsize=0, width=8)
         style.map("Dark.Vertical.TScrollbar", background=[("active", "#50545F"), ("pressed", self.ACCENT)])
         self.root.option_add("*TCombobox*Listbox.background", self.INPUT)
         self.root.option_add("*TCombobox*Listbox.foreground", self.TEXT)
@@ -175,88 +175,183 @@ class AutoChzzkApp:
         self.root.option_add("*TCombobox*Listbox.selectForeground", "#08251D")
 
     def _build_ui(self) -> None:
-        outer = tk.Frame(self.root, bg=self.BG, padx=30, pady=24); outer.pack(fill="both", expand=True)
-        heading = tk.Frame(outer, bg=self.BG); heading.pack(fill="x")
-        ttk.Button(heading, text="종료", style="Dark.TButton", command=self.on_close, cursor="hand2").pack(side="right", padx=(0, 0), pady=(4, 0))
-        title_row = tk.Frame(heading, bg=self.BG)
-        title_row.pack(anchor="w")
-        tk.Label(title_row, text=APP_NAME, fg=self.TEXT, bg=self.BG, font=("Malgun Gothic", 18, "bold")).pack(side="left")
-        ttk.Button(
-            title_row,
-            text="새로고침",
-            style="HeaderRefresh.TButton",
-            command=self.recheck_extension_status,
-            cursor="hand2",
-        ).pack(side="left", padx=(10, 0), pady=(3, 0))
-        tk.Label(heading, text="저장한 채널의 방송 시작을 자동 감지합니다", fg=self.MUTED, bg=self.BG, font=("Malgun Gothic", 9)).pack(anchor="w")
-        profile_row = tk.Frame(outer, bg=self.BG)
-        profile_row.pack(fill="x", pady=(13, 0))
-        tk.Label(profile_row, text="사용 중인 Chrome 프로필", fg=self.TEXT, bg=self.BG, font=("Malgun Gothic", 9, "bold")).pack(side="left")
-        self.profile_change_button = ttk.Button(profile_row, text="프로필 변경", style="Small.TButton", command=self.show_profile_editor, cursor="hand2")
-        if len(self.chrome_profiles) > 1:
-            self.profile_change_button.pack(side="right")
-        self.current_profile_label = tk.Label(profile_row, text=self.profile_value.get(), fg=self.ACCENT, bg=self.BG, font=("Malgun Gothic", 9, "bold"))
-        self.current_profile_label.pack(side="right", padx=(0, 9))
-        extension_row = tk.Frame(outer, bg=self.BG)
-        extension_row.pack(fill="x", pady=(5, 0))
-        self.extension_status_dot = tk.Label(extension_row, text="●", fg=self.MUTED, bg=self.BG, font=("Segoe UI", 8))
-        self.extension_status_dot.pack(side="left", padx=(0, 5))
-        tk.Label(extension_row, textvariable=self.extension_status_value, fg=self.MUTED, bg=self.BG, font=("Malgun Gothic", 8), anchor="w").pack(side="left")
-        ttk.Button(extension_row, text="설치 안내", style="Small.TButton", command=self.show_extension_install_guide, cursor="hand2").pack(side="right")
-        pairing_row = tk.Frame(outer, bg=self.BG)
-        pairing_row.pack(fill="x", pady=(2, 0))
-        tk.Label(pairing_row, text="자동 접속: 확장 설치 후 연결 코드를 등록하세요.", fg=self.MUTED, bg=self.BG, font=("Malgun Gothic", 8), anchor="w").pack(side="left")
-        ttk.Button(pairing_row, text="확장 연결 코드", style="Small.TButton", command=self.show_extension_pairing, cursor="hand2").pack(side="right")
-        self.profile_editor = tk.Frame(outer, bg=self.SURFACE, padx=14, pady=10)
-        tk.Label(self.profile_editor, text="변경할 Chrome 프로필", fg=self.TEXT, bg=self.SURFACE, font=("Malgun Gothic", 9, "bold")).pack(side="left")
-        self.profile_selector = ttk.Combobox(self.profile_editor, textvariable=self.profile_value, values=list(self.profile_labels), state="readonly", width=20, font=("Malgun Gothic", 9), style="Dark.TCombobox")
-        self.profile_selector.pack(side="left", padx=(10, 8))
-        self.profile_selector.bind("<<ComboboxSelected>>", lambda _event: self.root.after_idle(self._clear_profile_selector_highlight))
-        ttk.Button(self.profile_editor, text="프로필 적용", style="Accent.TButton", command=self.select_chrome_profile, cursor="hand2").pack(side="right")
-        self.add_card = tk.Frame(outer, bg=self.SURFACE, padx=17, pady=15); self.add_card.pack(fill="x", pady=(20, 14))
-        add_card = self.add_card
-        tk.Label(add_card, text="채널 추가", fg=self.TEXT, bg=self.SURFACE, font=("Malgun Gothic", 10, "bold")).pack(anchor="w")
-        input_row = tk.Frame(add_card, bg=self.SURFACE); input_row.pack(fill="x", pady=(8, 0))
-        entry = tk.Entry(input_row, textvariable=self.input_value, bg=self.INPUT, fg=self.TEXT, insertbackground=self.TEXT, relief="flat", font=("Consolas", 10), highlightthickness=1, highlightbackground="#40444F", highlightcolor=self.ACCENT)
-        entry.pack(side="left", fill="x", expand=True, ipady=9); entry.bind("<Return>", lambda _event: self.add_channel())
-        ttk.Button(input_row, text="등록", style="Accent.TButton", command=self.add_channel, cursor="hand2").pack(side="left", padx=(8, 0))
-        tk.Label(add_card, text="치지직 채널 URL 또는 32자리 채널 ID", fg=self.MUTED, bg=self.SURFACE, font=("Malgun Gothic", 8)).pack(anchor="w", pady=(5, 0))
-        controls = tk.Frame(outer, bg=self.BG); controls.pack(fill="x", pady=(0, 7))
-        self.count_label = tk.Label(controls, fg=self.TEXT, bg=self.BG, font=("Malgun Gothic", 10, "bold")); self.count_label.pack(side="left")
+        self.add_dialog = None
+        self.add_status_label = None
+        self.connection_state_value = tk.StringVar(value="확인 중")
+        self.version_summary_value = tk.StringVar(value=f"v{APP_VERSION}")
+        outer = tk.Frame(self.root, bg=self.BG, padx=26, pady=20)
+        outer.pack(fill="both", expand=True)
+        brand = tk.Frame(outer, bg=self.BG)
+        brand.pack(fill="x", pady=(0, 23))
+        tk.Label(brand, text="▎", fg=self.ACCENT, bg=self.BG, font=("Segoe UI", 11, "bold")).pack(side="left")
+        tk.Label(brand, text=APP_NAME, fg=self.TEXT, bg=self.BG, font=("Segoe UI", 10, "bold")).pack(side="left")
+        heading = tk.Frame(outer, bg=self.BG)
+        heading.pack(fill="x", pady=(0, 20))
+        actions = tk.Frame(heading, bg=self.BG)
+        actions.pack(side="right", anchor="center")
+        ttk.Button(actions, text="＋ 채널 추가", style="Accent.TButton", command=self.show_add_channel_dialog, cursor="hand2").pack(side="left", padx=(0, 8))
+        ttk.Button(actions, text="설정", style="HeaderRefresh.TButton", command=self.show_settings, cursor="hand2").pack(side="left")
+        titles = tk.Frame(heading, bg=self.BG)
+        titles.pack(side="left", fill="x", expand=True)
+        tk.Label(titles, text="내 채널", fg=self.TEXT, bg=self.BG, font=("Malgun Gothic", 18, "bold")).pack(anchor="w")
+        self.count_label = tk.Label(titles, fg=self.MUTED, bg=self.BG, font=("Malgun Gothic", 8))
+        self.count_label.pack(anchor="w", pady=(4, 0))
+
+        self.extension_notice = tk.Frame(outer, bg=self.SURFACE, padx=13, pady=10)
+        ttk.Button(self.extension_notice, text="연결 설정", style="Small.TButton", command=self.show_settings, cursor="hand2").pack(side="right", padx=(10, 0))
+        tk.Label(self.extension_notice, textvariable=self.extension_status_value, fg=self.DANGER, bg=self.SURFACE, font=("Malgun Gothic", 8), wraplength=340, justify="left").pack(side="left", fill="x", expand=True)
+        self.list_heading = tk.Frame(outer, bg=self.BG)
+        self.list_heading.pack(fill="x", pady=(0, 8))
+        tk.Label(self.list_heading, text="채널 / 방송 상태", fg=self.MUTED, bg=self.BG, font=("Malgun Gothic", 8)).pack(side="left", padx=(16, 0))
+        tk.Label(self.list_heading, text="자동 감지", fg=self.MUTED, bg=self.BG, font=("Malgun Gothic", 8)).pack(side="right", padx=(0, 42))
+
         footer = tk.Frame(outer, bg=self.BG)
-        footer.pack(fill="x", pady=(13, 0), side="bottom")
-        self.status_frame = tk.Frame(footer, bg="#1D2C29", padx=13, pady=9)
+        footer.pack(fill="x", side="bottom", pady=(14, 0))
+        self.status_frame = tk.Frame(footer, bg="#1D2C29", padx=12, pady=9)
         self.status_dot = tk.Canvas(self.status_frame, width=10, height=10, bg="#1D2C29", highlightthickness=0)
         self.status_dot_item = self.status_dot.create_oval(3, 3, 7, 7, fill=self.ACCENT, outline="")
         self.status_dot.pack(side="left", padx=(0, 7))
-        tk.Label(self.status_frame, textvariable=self.status_value, fg=self.TEXT, bg="#1D2C29", font=("Malgun Gothic", 9), anchor="w").pack(side="left", fill="x", expand=True)
+        tk.Label(self.status_frame, textvariable=self.status_value, fg=self.TEXT, bg="#1D2C29", font=("Malgun Gothic", 8), wraplength=460, justify="left").pack(side="left", fill="x", expand=True)
         self.version_row = tk.Frame(footer, bg=self.BG)
-        self.version_row.pack(fill="x", pady=(5, 0))
-        ttk.Button(
-            self.version_row,
-            text="업데이트 내역",
-            style="Small.TButton",
-            command=self.show_changelog,
-            cursor="hand2",
-        ).pack(side="left")
-        self.version_label = tk.Label(
-            self.version_row,
-            textvariable=self.version_value,
-            fg=self.MUTED,
-            bg=self.BG,
-            font=("Malgun Gothic", 7),
-            anchor="e",
-        )
-        self.version_label.pack(side="right")
-        list_box = tk.Frame(outer, bg=self.SURFACE); list_box.pack(fill="both", expand=True)
-        self.canvas = tk.Canvas(list_box, bg=self.SURFACE, highlightthickness=0, height=255)
+        self.version_row.pack(fill="x", pady=(8, 0))
+        self.extension_status_dot = tk.Label(self.version_row, text="●", fg=self.MUTED, bg=self.BG, font=("Segoe UI", 7))
+        self.extension_status_dot.pack(side="left", padx=(0, 6))
+        self.current_profile_label = tk.Label(self.version_row, text=self.profile_value.get(), fg=self.MUTED, bg=self.BG, font=("Malgun Gothic", 8), width=13, anchor="w", cursor="hand2")
+        self.current_profile_label.pack(side="left")
+        self.current_profile_label.bind("<Button-1>", lambda _event: self.show_settings())
+        tk.Button(self.version_row, textvariable=self.connection_state_value, command=self.show_settings, bg=self.BG, fg=self.MUTED, activebackground=self.BG, activeforeground=self.TEXT, relief="flat", bd=0, font=("Malgun Gothic", 8), cursor="hand2").pack(side="left")
+        tk.Button(self.version_row, textvariable=self.version_summary_value, command=self.show_changelog, bg=self.BG, fg=self.MUTED, activebackground=self.BG, activeforeground=self.TEXT, relief="flat", bd=0, font=("Segoe UI", 8), cursor="hand2").pack(side="right")
+
+        list_box = tk.Frame(outer, bg=self.SURFACE)
+        list_box.pack(fill="both", expand=True)
+        self.canvas = tk.Canvas(list_box, bg=self.SURFACE, highlightthickness=0, height=350)
         scrollbar = ttk.Scrollbar(list_box, orient="vertical", command=self.canvas.yview, style="Dark.Vertical.TScrollbar")
-        self.list_frame = tk.Frame(self.canvas, bg=self.SURFACE, padx=12, pady=10)
+        self.list_frame = tk.Frame(self.canvas, bg=self.SURFACE)
         self.list_window = self.canvas.create_window((0, 0), window=self.list_frame, anchor="nw")
-        self.canvas.configure(yscrollcommand=scrollbar.set); self.canvas.pack(side="left", fill="both", expand=True); scrollbar.pack(side="right", fill="y")
+        self.canvas.configure(yscrollcommand=scrollbar.set)
+        self.canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
         self.list_frame.bind("<Configure>", lambda _event: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
         self.canvas.bind("<Configure>", lambda event: self.canvas.itemconfigure(self.list_window, width=event.width))
         self.root.bind_all("<MouseWheel>", self._on_list_mousewheel, add="+")
+        self._build_settings_dialog()
+
+    def _center_dialog(self, dialog: tk.Toplevel) -> None:
+        dialog.update_idletasks()
+        x = self.root.winfo_rootx() + max(0, (self.root.winfo_width() - dialog.winfo_width()) // 2)
+        y = self.root.winfo_rooty() + max(0, (self.root.winfo_height() - dialog.winfo_height()) // 2)
+        dialog.geometry(f"+{x}+{y}")
+
+    def _build_settings_dialog(self) -> None:
+        dialog = self.settings_dialog = tk.Toplevel(self.root, bg=self.SURFACE)
+        dialog.withdraw()
+        dialog.title(f"{APP_NAME} · 설정")
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+        card = tk.Frame(dialog, bg=self.SURFACE, padx=24, pady=22)
+        card.pack(fill="both", expand=True)
+        tk.Label(card, text="설정", fg=self.TEXT, bg=self.SURFACE, font=("Malgun Gothic", 14, "bold")).pack(anchor="w", pady=(0, 22))
+
+        profile_section = tk.Frame(card, bg=self.SURFACE)
+        profile_section.pack(fill="x")
+        tk.Label(profile_section, text="사용할 Chrome 프로필", fg=self.TEXT, bg=self.SURFACE, font=("Malgun Gothic", 9, "bold")).pack(anchor="w", pady=(0, 9))
+        self.profile_single_label = tk.Label(profile_section, textvariable=self.profile_value, fg=self.MUTED, bg=self.SURFACE, font=("Malgun Gothic", 9))
+        self.profile_editor = tk.Frame(profile_section, bg=self.SURFACE)
+        self.profile_selector = ttk.Combobox(self.profile_editor, textvariable=self.profile_value, values=list(self.profile_labels), state="readonly", width=26, font=("Malgun Gothic", 9), style="Dark.TCombobox")
+        self.profile_selector.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        self.profile_selector.bind("<<ComboboxSelected>>", lambda _event: self.root.after_idle(self._clear_profile_selector_highlight))
+        ttk.Button(self.profile_editor, text="적용", style="DialogDark.TButton", command=self.select_chrome_profile, cursor="hand2").pack(side="right")
+        self._refresh_profile_controls()
+
+        tk.Frame(card, bg="#3A3D47", height=1).pack(fill="x", pady=20)
+        tk.Label(card, text="확장 프로그램", fg=self.TEXT, bg=self.SURFACE, font=("Malgun Gothic", 9, "bold")).pack(anchor="w")
+        tk.Label(card, textvariable=self.extension_status_value, fg=self.MUTED, bg=self.SURFACE, font=("Malgun Gothic", 8), wraplength=390, justify="left").pack(anchor="w", pady=(5, 12))
+        extension_actions = tk.Frame(card, bg=self.SURFACE)
+        extension_actions.pack(fill="x")
+        for label, command in (("연결 재확인", self.recheck_extension_status), ("설치 안내", self.show_extension_install_guide), ("연결 코드", self.show_extension_pairing)):
+            ttk.Button(extension_actions, text=label, style="DialogDark.TButton", command=command, cursor="hand2").pack(side="left", padx=(0, 7))
+        tk.Label(card, text="방송 종료 시 앱이 자동으로 연 탭만 닫습니다.", fg=self.MUTED, bg=self.SURFACE, font=("Malgun Gothic", 8)).pack(anchor="w", pady=(10, 0))
+        tk.Frame(card, bg="#3A3D47", height=1).pack(fill="x", pady=20)
+        tk.Label(card, text=f"{APP_NAME} {APP_VERSION}", fg=self.TEXT, bg=self.SURFACE, font=("Malgun Gothic", 9, "bold")).pack(anchor="w")
+        self.version_label = tk.Label(card, textvariable=self.version_value, fg=self.MUTED, bg=self.SURFACE, font=("Malgun Gothic", 8), wraplength=390, justify="left")
+        self.version_label.pack(anchor="w", pady=(5, 10))
+        ttk.Button(card, text="업데이트 내역", style="DialogDark.TButton", command=self.show_changelog, cursor="hand2").pack(anchor="w")
+        tk.Frame(card, bg="#3A3D47", height=1).pack(fill="x", pady=20)
+        window_actions = tk.Frame(card, bg=self.SURFACE)
+        window_actions.pack(fill="x")
+        ttk.Button(window_actions, text="트레이로 숨기기", style="DialogDark.TButton", command=self._hide_from_settings, cursor="hand2").pack(side="left")
+        ttk.Button(window_actions, text="앱 종료", style="DialogDark.TButton", command=self.on_close, cursor="hand2").pack(side="right")
+        ttk.Button(card, text="닫기", style="DialogAccent.TButton", command=self._close_settings_dialog, cursor="hand2").pack(anchor="e", pady=(18, 0))
+        dialog.protocol("WM_DELETE_WINDOW", self._close_settings_dialog)
+        dialog.bind("<Escape>", lambda _event: self._close_settings_dialog())
+
+    def _refresh_profile_controls(self) -> None:
+        self.profile_selector.configure(values=list(self.profile_labels))
+        if len(self.chrome_profiles) > 1:
+            self.profile_single_label.pack_forget()
+            self.profile_editor.pack(fill="x")
+        else:
+            self.profile_editor.pack_forget()
+            self.profile_single_label.pack(anchor="w")
+
+    def show_settings(self) -> None:
+        if self.active_dialog is not None and self.active_dialog.winfo_exists():
+            self.active_dialog.lift()
+            return
+        self.profile_value.set(self.selected_chrome_profile["name"])
+        self.settings_dialog.deiconify()
+        self._center_dialog(self.settings_dialog)
+        self.settings_dialog.lift()
+        self.settings_dialog.grab_set()
+        self.settings_dialog.focus_set()
+
+    def _close_settings_dialog(self) -> None:
+        self.settings_dialog.grab_release()
+        self.settings_dialog.withdraw()
+        self.root.focus_set()
+
+    def _hide_from_settings(self) -> None:
+        self._close_settings_dialog()
+        self.hide_to_tray()
+
+    def show_add_channel_dialog(self) -> None:
+        if self.active_dialog is not None and self.active_dialog.winfo_exists():
+            self.active_dialog.lift()
+            return
+        if self.add_dialog is not None and self.add_dialog.winfo_exists():
+            self.add_dialog.lift()
+            return
+        dialog = self.add_dialog = tk.Toplevel(self.root, bg=self.SURFACE)
+        dialog.title(f"{APP_NAME} · 채널 추가")
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+        card = tk.Frame(dialog, bg=self.SURFACE, padx=24, pady=22)
+        card.pack(fill="both", expand=True)
+        tk.Label(card, text="채널 추가", fg=self.TEXT, bg=self.SURFACE, font=("Malgun Gothic", 13, "bold")).pack(anchor="w")
+        tk.Label(card, text="치지직 채널 URL 또는 32자리 채널 ID", fg=self.MUTED, bg=self.SURFACE, font=("Malgun Gothic", 9)).pack(anchor="w", pady=(10, 12))
+        entry = tk.Entry(card, textvariable=self.input_value, width=40, bg=self.INPUT, fg=self.TEXT, insertbackground=self.TEXT, relief="flat", font=("Consolas", 10), highlightthickness=1, highlightbackground="#40444F", highlightcolor=self.ACCENT)
+        entry.pack(fill="x", ipady=9)
+        entry.bind("<Return>", lambda _event: self.add_channel())
+        self.add_status_label = tk.Label(card, textvariable=self.status_value, fg=self.MUTED, bg=self.SURFACE, font=("Malgun Gothic", 8), wraplength=360, justify="left")
+        self.add_status_label.pack(anchor="w", pady=(9, 0))
+        buttons = tk.Frame(card, bg=self.SURFACE)
+        buttons.pack(fill="x", pady=(18, 0))
+        ttk.Button(buttons, text="취소", style="DialogDark.TButton", command=self._close_add_channel_dialog, cursor="hand2").pack(side="right")
+        ttk.Button(buttons, text="등록", style="DialogAccent.TButton", command=self.add_channel, cursor="hand2").pack(side="right", padx=(0, 8))
+        dialog.protocol("WM_DELETE_WINDOW", self._close_add_channel_dialog)
+        dialog.bind("<Escape>", lambda _event: self._close_add_channel_dialog())
+        self._center_dialog(dialog)
+        dialog.grab_set()
+        entry.focus_set()
+
+    def _close_add_channel_dialog(self) -> None:
+        dialog = getattr(self, "add_dialog", None)
+        if dialog is not None and dialog.winfo_exists():
+            dialog.grab_release()
+            dialog.destroy()
+        self.add_dialog = None
+        self.add_status_label = None
+
 
     def _on_list_mousewheel(self, event) -> str | None:
         """Scroll the channel list when the pointer is over its visible area."""
@@ -336,15 +431,13 @@ class AutoChzzkApp:
             self._apply_selected_profile()
             self.profile_value.set(self.selected_chrome_profile["name"])
             self.current_profile_label.configure(text=self.selected_chrome_profile["name"])
-            self.profile_selector.configure(values=list(self.profile_labels))
-            if len(self.chrome_profiles) > 1:
-                self.profile_change_button.pack(side="right")
+            if hasattr(self, "profile_single_label"):
+                self._refresh_profile_controls()
             else:
-                self.profile_change_button.pack_forget()
+                self.profile_selector.configure(values=list(self.profile_labels))
             identity_changed = any(previous_profile.get(field) != self.selected_chrome_profile.get(field)
                                    for field in ("directory", "gaia_id", "email"))
             if identity_changed:
-                self.profile_editor.pack_forget()
                 self._reset_extension_connection_check()
                 self._set_extension_status("Chrome 확장 프로그램 연결 확인 중…")
                 if not current_profile_exists:
@@ -382,6 +475,15 @@ class AutoChzzkApp:
         self.extension_status_value.set(message)
         if hasattr(self, "extension_status_dot"):
             self.extension_status_dot.configure(fg=self.ACCENT if connected else self.DANGER if connected is False else self.MUTED)
+        if hasattr(self, "connection_state_value"):
+            state = "연결됨" if connected else "업데이트 필요" if "업데이트 필요" in message else "연결 안 됨" if connected is False else "확인 중"
+            self.connection_state_value.set(state)
+        if hasattr(self, "extension_notice"):
+            if connected is False:
+                if not self.extension_notice.winfo_manager():
+                    self.extension_notice.pack(fill="x", pady=(0, 14), before=self.list_heading)
+            else:
+                self.extension_notice.pack_forget()
 
     def _schedule_update_check(self) -> None:
         if self.stop_event.is_set():
@@ -407,6 +509,9 @@ class AutoChzzkApp:
     def _set_latest_version(self, version: str | None) -> None:
         latest_text = version if version is not None else "확인 실패"
         self.version_value.set(f"현재 버전 {APP_VERSION} · 최신 버전 {latest_text}")
+        if hasattr(self, "version_summary_value"):
+            summary = "확인 실패" if version is None else "최신" if version == APP_VERSION else f"최신 {version}"
+            self.version_summary_value.set(f"v{APP_VERSION} · {summary}")
 
     def _start_update_download(self, update_info: UpdateInfo) -> None:
         if self.stop_event.is_set() or self.update_download_in_progress:
@@ -552,23 +657,17 @@ class AutoChzzkApp:
     def show_profile_editor(self) -> None:
         if len(self.chrome_profiles) < 2:
             return
-        if self.profile_editor.winfo_ismapped():
-            self.profile_editor.pack_forget()
-            return
-        self.profile_value.set(self.selected_chrome_profile["name"])
-        self.profile_editor.pack(fill="x", pady=(8, 0), before=self.add_card)
+        self.show_settings()
         self._clear_profile_selector_highlight()
-        self.root.after_idle(self._clear_profile_selector_highlight)
+        self.profile_selector.focus_set()
 
     def _clear_profile_selector_highlight(self) -> None:
         self.profile_selector.selection_clear()
-        self.root.focus_set()
 
     def select_chrome_profile(self) -> None:
         profile = self.profile_labels.get(self.profile_value.get())
         if profile is None:
             return
-        self.profile_editor.pack_forget()
         if profile == self.selected_chrome_profile:
             return
         previous_settings = dict(self.settings)
@@ -601,6 +700,7 @@ class AutoChzzkApp:
             self.active_dialog.lift()
             return
 
+        previous_grab = self.root.grab_current()
         dialog = tk.Toplevel(self.root, bg=self.SURFACE)
         self.active_dialog = dialog
         dialog.title(APP_NAME)
@@ -621,6 +721,9 @@ class AutoChzzkApp:
             dialog.grab_release()
             dialog.destroy()
             self.active_dialog = None
+            if previous_grab is not None and previous_grab.winfo_exists() and previous_grab.winfo_viewable():
+                previous_grab.grab_set()
+                previous_grab.focus_set()
             if callback is not None:
                 callback()
 
@@ -628,6 +731,7 @@ class AutoChzzkApp:
             ttk.Button(buttons, text=cancel_text, style="DialogDark.TButton", command=lambda: close(cancel_command), cursor="hand2", width=12).pack(side="right")
         ttk.Button(buttons, text=confirm_text, style="DialogAccent.TButton", command=lambda: close(confirm_command), cursor="hand2", width=12).pack(side="right", padx=(0, 8) if cancel_text else 0)
         dialog.protocol("WM_DELETE_WINDOW", close)
+        dialog.bind("<Escape>", lambda _event: close(cancel_command))
         dialog.update_idletasks()
         root_x, root_y = self.root.winfo_rootx(), self.root.winfo_rooty()
         x = root_x + max(0, (self.root.winfo_width() - dialog.winfo_width()) // 2)
@@ -721,7 +825,7 @@ class AutoChzzkApp:
     def show_extension_install_guide(self) -> None:
         self._show_app_dialog(
             "Chrome 확장 프로그램 설치 안내",
-            f"선택한 Chrome 프로필({self.selected_chrome_profile['name']})에만 설치하면 됩니다.\n\n1. Chrome 열기를 누릅니다.\n2. chrome://extensions 에 접속합니다.\n3. 화면 우측 상단의 ‘개발자 모드’를 켭니다.\n4. ‘압축해제된 확장 프로그램 로드’를 눌러 AutoChzzk 설치 폴더의 chrome_extension 폴더를 선택합니다.\n5. 앱의 ‘확장 연결 코드’를 복사하고, 확장 아이콘을 클릭해 설정에 등록합니다.\n\n이전 버전은 확장 새로고침 후 연결 코드를 등록해야 합니다. 이미 다른 프로필에 설치했다면 ‘프로필 변경’에서 그 프로필로 바꿔 주세요.",
+            f"선택한 Chrome 프로필({self.selected_chrome_profile['name']})에만 설치하면 됩니다.\n\n1. Chrome 열기를 누릅니다.\n2. chrome://extensions 에 접속합니다.\n3. 화면 우측 상단의 ‘개발자 모드’를 켭니다.\n4. ‘압축해제된 확장 프로그램 로드’를 눌러 AutoChzzk 설치 폴더의 chrome_extension 폴더를 선택합니다.\n5. 앱의 설정 → 연결 코드에서 코드를 복사하고, 확장 아이콘을 클릭해 설정에 등록합니다.\n\n이전 버전은 확장 새로고침 후 연결 코드를 등록해야 합니다. 이미 다른 프로필에 설치했다면 앱의 설정에서 해당 Chrome 프로필을 선택하고 ‘적용’을 눌러 주세요.",
             "Chrome 열기",
             self._open_chrome_extensions,
             "확인했습니다",
@@ -762,6 +866,7 @@ class AutoChzzkApp:
             self.changelog_dialog.focus_set()
             return
 
+        previous_grab = self.root.grab_current()
         dialog = tk.Toplevel(self.root, bg=self.SURFACE)
         self.changelog_dialog = dialog
         dialog.title("업데이트 내역")
@@ -806,9 +911,13 @@ class AutoChzzkApp:
             if dialog.winfo_exists():
                 dialog.destroy()
             self.changelog_dialog = None
+            if previous_grab is not None and previous_grab.winfo_exists() and previous_grab.winfo_viewable():
+                previous_grab.grab_set()
+                previous_grab.focus_set()
 
         ttk.Button(card, text="닫기", style="DialogAccent.TButton", command=close, cursor="hand2", width=10).pack(anchor="e", pady=(14, 0))
         dialog.protocol("WM_DELETE_WINDOW", close)
+        dialog.bind("<Escape>", lambda _event: close())
         dialog.geometry("570x540")
         dialog.update_idletasks()
         root_x, root_y = self.root.winfo_rootx(), self.root.winfo_rooty()
@@ -873,6 +982,7 @@ class AutoChzzkApp:
             self.channels = channels
             if extract_channel_id(self.input_value.get()) == channel_id:
                 self.input_value.set("")
+                self._close_add_channel_dialog()
             self.initial_checks.add(channel_id)
             self._refresh_list()
             self._set_status("채널 등록 완료 · 방송 상태 확인 중…")
@@ -899,7 +1009,7 @@ class AutoChzzkApp:
 
     def _update_channel_count(self) -> None:
         enabled_count = sum(bool(channel.get("enabled")) for channel in self.channels)
-        self.count_label.configure(text=f"등록 채널 {len(self.channels)}개 · 감지 중 {enabled_count}개")
+        self.count_label.configure(text=f"등록 {len(self.channels)}개 · 감지 {enabled_count}개")
 
     def _update_monitor_status(self) -> None:
         """Refresh the watching indicators without showing an idle footer message."""
@@ -909,36 +1019,53 @@ class AutoChzzkApp:
         for channel_id, indicator in self.watching_indicators.items():
             if indicator.winfo_exists():
                 indicator.configure(
-                    text="●" if CHROME_TABS.is_watched(channel_id) else "",
+                    text="● 시청 중" if CHROME_TABS.is_watched(channel_id) else "",
                     fg=self.DANGER,
                 )
 
     def _make_channel_row(self, channel: dict) -> None:
-        row = tk.Frame(self.list_frame, bg=self.INPUT, padx=12, pady=9); row.pack(fill="x", pady=4)
+        row = tk.Frame(self.list_frame, bg=self.SURFACE, padx=16, pady=15)
+        row.pack(fill="x")
         self.channel_rows[channel["id"]] = row
-        actions = tk.Frame(row, bg=self.INPUT)
-        actions.pack(side="right", anchor="n")
-        active = bool(channel.get("enabled")); label = "감지 ON" if active else "감지 OFF"
-        detection_button = tk.Button(actions, text=label, command=lambda value=channel["id"]: self.toggle_channel(value), relief="flat", bd=0, cursor="hand2", padx=9, pady=5, font=("Malgun Gothic", 8, "bold"), bg=self.ACCENT if active else "#454954", fg="#08251D" if active else self.TEXT, activebackground="#38EDBB" if active else "#5A5F6B")
-        detection_button.pack(side="right", padx=(7, 0))
+        actions = tk.Frame(row, bg=self.SURFACE)
+        actions.pack(side="right", anchor="center")
+        tk.Button(actions, text="⋯", command=lambda value=channel["id"]: self.show_channel_menu(value), bg=self.SURFACE, fg=self.MUTED, activebackground=self.INPUT, activeforeground=self.TEXT, relief="flat", bd=0, width=2, font=("Segoe UI", 15), cursor="hand2").pack(side="right", padx=(9, 0))
+        detection_button = AnimatedToggle(actions, value=bool(channel.get("enabled")), command=lambda value=channel["id"]: self.toggle_channel(value), bg=self.SURFACE, accent=self.ACCENT, muted=self.MUTED, text_color=self.TEXT)
+        detection_button.pack(side="right")
         self.detection_buttons[channel["id"]] = detection_button
-        ttk.Button(actions, text="삭제", style="Small.TButton", command=lambda value=channel["id"], name=channel.get("name") or channel["id"]: self.confirm_remove_channel(value, name), cursor="hand2").pack(side="right")
-        interval_label = tk.Label(actions, text=f"{channel.get('interval', 60)}초", fg=self.MUTED, bg=self.INPUT, font=("Consolas", 9))
-        interval_label.pack(side="right", padx=(0, 5))
-        self.interval_labels[channel["id"]] = interval_label
-        ttk.Button(actions, text="간격 수정", style="Small.TButton", command=lambda value=channel["id"]: self.show_interval_editor(value), cursor="hand2").pack(side="right", padx=(0, 8))
-        details = tk.Frame(row, bg=self.INPUT)
+        details = tk.Frame(row, bg=self.SURFACE)
         details.pack(side="left", fill="both", expand=True, padx=(0, 10))
-        name_row = tk.Frame(details, bg=self.INPUT)
+        name_row = tk.Frame(details, bg=self.SURFACE)
         name_row.pack(fill="x")
-        watching_indicator = tk.Label(name_row, bg=self.INPUT, font=("Segoe UI", 8), width=1)
-        watching_indicator.pack(side="left", padx=(0, 4))
+        watching_indicator = tk.Label(name_row, bg=self.SURFACE, font=("Malgun Gothic", 8))
+        watching_indicator.pack(side="right", padx=(7, 0))
         self.watching_indicators[channel["id"]] = watching_indicator
-        MarqueeText(name_row, channel.get("name") or channel["id"], fg=self.TEXT, bg=self.INPUT, font=("Malgun Gothic", 10, "bold")).pack(side="left", fill="x", expand=True)
+        MarqueeText(name_row, channel.get("name") or channel["id"], fg=self.TEXT, bg=self.SURFACE, font=("Malgun Gothic", 10, "bold")).pack(side="left", fill="x", expand=True)
         live_text, live_color = self._live_status_display(channel["id"])
-        live_status = MarqueeText(details, live_text, fg=live_color, bg=self.INPUT, font=("Malgun Gothic", 8), height=20)
+        live_status = MarqueeText(details, live_text, fg=live_color, bg=self.SURFACE, font=("Malgun Gothic", 8), height=20)
         live_status.pack(fill="x", pady=(2, 0))
         self.live_status_widgets[channel["id"]] = live_status
+        tk.Frame(self.list_frame, bg=self.INPUT, height=1).pack(fill="x")
+
+    def show_channel_menu(self, channel_id: str) -> None:
+        channel = next((item for item in self.channels if item["id"] == channel_id), None)
+        if channel is None:
+            return
+        row = self.channel_rows.get(channel_id)
+        if row is None or not row.winfo_exists():
+            return
+        previous_menu = getattr(self, "channel_menu", None)
+        if previous_menu is not None:
+            previous_menu.destroy()
+        menu = self.channel_menu = tk.Menu(self.root, tearoff=False, bg=self.INPUT, fg=self.TEXT, activebackground="#3A3D47", activeforeground=self.TEXT, font=("Malgun Gothic", 9), bd=0)
+        menu.add_command(label=f"{channel.get('interval', 60)}초마다 확인", state="disabled")
+        menu.add_separator()
+        menu.add_command(label="확인 간격 수정", command=lambda: self.show_interval_editor(channel_id))
+        menu.add_command(label="채널 삭제", foreground=self.DANGER, command=lambda: self.confirm_remove_channel(channel_id, channel.get("name") or channel_id))
+        try:
+            menu.tk_popup(row.winfo_rootx() + row.winfo_width() - 160, row.winfo_rooty() + row.winfo_height() - 4)
+        finally:
+            menu.grab_release()
 
     def _live_status_display(self, channel_id: str) -> tuple[str, str]:
         live_state = self.live_info.get(channel_id)
@@ -1002,12 +1129,7 @@ class AutoChzzkApp:
             detection_button = self.detection_buttons.get(channel_id)
             if detection_button is not None and detection_button.winfo_exists():
                 active = next((bool(item.get("enabled")) for item in channels if item["id"] == channel_id), False)
-                detection_button.configure(
-                    text="감지 ON" if active else "감지 OFF",
-                    bg=self.ACCENT if active else "#454954",
-                    fg="#08251D" if active else self.TEXT,
-                    activebackground="#38EDBB" if active else "#5A5F6B",
-                )
+                detection_button.set_value(active)
             self._update_channel_count()
 
     def confirm_remove_channel(self, channel_id: str, channel_name: str) -> None:
@@ -1162,6 +1284,9 @@ class AutoChzzkApp:
         self.status_clear_token += 1
         clear_token = self.status_clear_token
         self.status_value.set(message)
+        add_status = getattr(self, "add_status_label", None)
+        if add_status is not None and add_status.winfo_exists():
+            add_status.configure(fg=self.DANGER if is_error else self.MUTED)
         self.status_dot.itemconfigure(self.status_dot_item, fill=self.DANGER if is_error else self.ACCENT)
         if not self.status_frame.winfo_ismapped():
             self.status_frame.pack(fill="x", before=self.version_row)

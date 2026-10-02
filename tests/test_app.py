@@ -306,10 +306,7 @@ class ChannelToggleUITests(unittest.TestCase):
         app._refresh_list()
         self.root.update_idletasks()
         app.canvas.yview_moveto(0.55)
-        self.button = next(
-            widget for widget in app.channel_rows[self.channel_id].winfo_children()[0].winfo_children()
-            if isinstance(widget, tk.Button)
-        )
+        self.button = app.detection_buttons[self.channel_id]
 
     def test_toggle_preserves_rows_and_scroll_while_updating_detection(self):
         app = self.app
@@ -317,16 +314,13 @@ class ChannelToggleUITests(unittest.TestCase):
         live_status = app.live_status_widgets[self.channel_id]
         scroll = app.canvas.yview()
         self.assertGreater(scroll[0], 0)
-        for enabled, label, count in [(False, '감지 OFF', 10), (True, '감지 ON', 11)]:
+        for enabled, count in [(False, 10), (True, 11)]:
             self.button.invoke()
             self.root.update_idletasks()
             self.assertEqual(app.channel_rows, rows)
             self.assertEqual(app.canvas.yview(), scroll)
-            self.assertEqual(self.button.cget('text'), label)
-            self.assertEqual(self.button.cget('bg'), app.ACCENT if enabled else '#454954')
-            self.assertEqual(self.button.cget('fg'), '#08251D' if enabled else app.TEXT)
-            self.assertEqual(self.button.cget('activebackground'), '#38EDBB' if enabled else '#5A5F6B')
-            self.assertEqual(app.count_label.cget('text'), f'등록 채널 12개 · 감지 중 {count}개')
+            self.assertEqual(self.button.get_value(), enabled)
+            self.assertIn(f'감지 {count}개', app.count_label.cget('text'))
             self.assertEqual(app.channels[9]['enabled'], enabled)
             self.assertEqual(app.channels[9]['extra'], 'preserved')
             self.assertIs(app.live_status_widgets[self.channel_id], live_status)
@@ -364,6 +358,85 @@ class ChannelToggleUITests(unittest.TestCase):
         self.assertIs(app.channels, channels)
         self.assertEqual(app.channel_rows, rows)
         self.assertEqual(app.canvas.yview(), scroll)
-        self.assertEqual(self.button.cget('text'), '감지 ON')
-        self.assertEqual(app.count_label.cget('text'), '등록 채널 12개 · 감지 중 11개')
+        self.assertTrue(self.button.get_value())
+        self.assertIn('감지 11개', app.count_label.cget('text'))
         self.assertEqual(app.channel_generations, {})
+
+
+class ListLayoutUITests(unittest.TestCase):
+    def setUp(self):
+        try:
+            self.root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f'Tk display unavailable: {error}')
+        self.root.withdraw()
+        self.addCleanup(self.root.destroy)
+        app = self.app = AutoChzzkApp.__new__(AutoChzzkApp)
+        app.root = self.root
+        app.channels = []
+        app.editing_channel_id = None
+        app.live_info = {}
+        app.active_dialog = None
+        app.changelog_dialog = None
+        app.selected_chrome_profile = dict(directory='Default', name='Synthetic profile', gaia_id='', email='')
+        app.chrome_profiles = [app.selected_chrome_profile, dict(directory='Profile 1', name='Other profile', gaia_id='', email='')]
+        app.profile_labels = {profile['name']: profile for profile in app.chrome_profiles}
+        app.profile_value = tk.StringVar(value='Synthetic profile')
+        app.input_value = tk.StringVar()
+        app.status_value = tk.StringVar()
+        app.extension_status_value = tk.StringVar(value='Chrome 확장 프로그램 연결 확인 중…')
+        app.version_value = tk.StringVar(value='현재 버전 · 최신 버전 확인 중…')
+        app._configure_styles()
+        app._build_ui()
+        app._refresh_list()
+        self.root.update_idletasks()
+
+    def test_add_dialog_preserves_unsubmitted_input_when_reopened(self):
+        app = self.app
+        app.show_add_channel_dialog()
+        app.input_value.set('a' * 32)
+        app._close_add_channel_dialog()
+        app.show_add_channel_dialog()
+        self.assertEqual(app.input_value.get(), 'a' * 32)
+        self.assertTrue(app.add_dialog.winfo_exists())
+
+    def test_connection_problem_remains_visible_outside_settings(self):
+        app = self.app
+        app._set_extension_status('Chrome 확장 프로그램 연결 안 됨', False)
+        self.assertEqual(app.extension_notice.winfo_manager(), 'pack')
+        app._set_extension_status('Chrome 확장 프로그램 연결됨', True)
+        self.assertEqual(app.extension_notice.winfo_manager(), '')
+
+    def test_auxiliary_dialog_returns_focus_and_grab_to_settings(self):
+        app = self.app
+        self.root.deiconify()
+        self.root.update()
+        app.show_settings()
+        self.root.update()
+        app.show_extension_install_guide()
+        self.assertIs(self.root.grab_current(), app.active_dialog)
+        buttons = app.active_dialog.winfo_children()[0].winfo_children()[-1].winfo_children()
+        next(button for button in buttons if button.cget('text') == '확인했습니다').invoke()
+        self.root.update()
+        self.assertIsNone(app.active_dialog)
+        self.assertIs(self.root.grab_current(), app.settings_dialog)
+
+    def test_changelog_returns_grab_to_settings_after_closing(self):
+        app = self.app
+        self.root.deiconify()
+        self.root.update()
+        app.show_settings()
+        self.root.update()
+        app.show_changelog()
+        app.changelog_dialog.winfo_children()[0].winfo_children()[-1].invoke()
+        self.assertIsNone(app.changelog_dialog)
+        self.assertIs(self.root.grab_current(), app.settings_dialog)
+
+    def test_channel_menu_can_open_interval_editor_after_posting(self):
+        app = self.app
+        app.channels = [dict(id='a' * 32, name='Synthetic', enabled=True, interval=60)]
+        app._refresh_list()
+        with patch.object(tk.Menu, 'tk_popup'):
+            app.show_channel_menu('a' * 32)
+        app.channel_menu.invoke(2)
+        self.assertIn('a' * 32, app.interval_editors)
