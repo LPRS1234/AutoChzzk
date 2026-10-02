@@ -113,6 +113,7 @@ class AutoChzzkApp:
         self.extension_update_prompted = False
         self.extension_reload_deadline: float | None = None
         self.extension_connected = False
+        self.chrome_launch_requested = False
         self.extension_connection_deadline = time.monotonic() + EXTENSION_CONNECTION_GRACE_SECONDS
         self.extension_server = start_extension_server(lambda: self._ui(self._restore_window))
         self.window_icon = None
@@ -374,6 +375,7 @@ class AutoChzzkApp:
         self.extension_update_prompted = False
         self.extension_reload_deadline = None
         self.extension_connected = False
+        self.chrome_launch_requested = False
         self.extension_connection_deadline = time.monotonic() + grace_seconds
 
     def _set_extension_status(self, message: str, connected: bool | None = None) -> None:
@@ -516,6 +518,7 @@ class AutoChzzkApp:
         self._update_monitor_status()
 
     def _set_connected_extension_status(self) -> None:
+        self.chrome_launch_requested = False
         if not CHROME_TABS.selected_extension_needs_update(REQUIRED_EXTENSION_VERSION):
             self.extension_reload_deadline = None
             self.extension_update_prompted = False
@@ -1130,8 +1133,18 @@ class AutoChzzkApp:
             self._set_status(f"방송 시작 감지: {channel.get('name', channel['id'])} · Chrome 백그라운드 탭으로 여는 중")
             self.root.after(6_000, lambda: self._fallback_open(command_id, channel))
             return
+        if self.chrome_launch_requested:
+            # All channels share the same launch while Chrome restores tabs and
+            # the selected profile's extension sends its first report.
+            if time.monotonic() < self.extension_connection_deadline:
+                self._set_status("Chrome 시작 후 확장 프로그램 연결을 기다리는 중입니다…")
+                return
+            if self._is_chrome_running():
+                self._set_status("Chrome 확장 프로그램 연결을 확인하지 못해 방송을 자동으로 열지 않았습니다.", True)
+                return
         if self._launch_selected_chrome():
             self._reset_extension_connection_check(EXTENSION_LAUNCH_CONNECTION_GRACE_SECONDS)
+            self.chrome_launch_requested = True
             self._set_extension_status("Chrome 시작 후 확장 프로그램 연결 확인 중…")
             self._set_status("Chrome을 열어 확장 프로그램 연결을 기다리는 중입니다…")
             self.root.after(500, self._check_extension_connection)

@@ -4,6 +4,12 @@ from __future__ import annotations
 
 RELEASE_NOTES: tuple[tuple[str, tuple[str, ...]], ...] = (
     (
+        "v2.1.6",
+        (
+            "앱 시작 시 여러 방송을 감지해도 Chrome을 한 번만 실행하고, 복원된 탭 확인 후 필요한 방송만 기존 창에서 열도록 수정했습니다.",
+        ),
+    ),
+    (
         "v2.1.5",
         (
             "채널 감지 ON/OFF를 변경할 때 목록이 깜빡이거나 스크롤이 위로 이동하는 문제를 수정했습니다.",

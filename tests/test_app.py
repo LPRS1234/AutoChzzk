@@ -1,4 +1,5 @@
 from queue import SimpleQueue
+from pathlib import Path
 import threading
 import tkinter as tk
 import unittest
@@ -6,6 +7,7 @@ from unittest.mock import Mock, patch
 
 from autochzzk import AutoChzzkApp
 from autochzzk_core.config import EXTENSION_RELOAD_GRACE_SECONDS, REQUIRED_EXTENSION_VERSION
+from autochzzk_core.extension import ChromeTabState
 from autochzzk_core.monitor import LookupPool
 
 
@@ -157,6 +159,116 @@ class AppIntegrationTests(unittest.TestCase):
         app.recheck_extension_status()
 
         self.assertEqual(app.extension_reload_deadline, 123)
+
+
+class ChromeStartupTests(unittest.TestCase):
+    def setUp(self):
+        app = self.app = AutoChzzkApp.__new__(AutoChzzkApp)
+        self.now = 100.0
+        self.tabs = ChromeTabState()
+        self.tabs.set_selected_profile({'gaia:synthetic-profile'})
+        app.channels = [dict(id=letter * 32, name='Synthetic', enabled=True) for letter in 'abc']
+        app.live_info = {channel['id']: (True, 'Synthetic live') for channel in app.channels}
+        app.selected_chrome_profile = {'directory': 'Default'}
+        app.stop_event = threading.Event()
+        app.allow_browser_open_after = 100.0
+        app.extension_connection_deadline = 90.0
+        app.extension_setup_prompted = True
+        app.extension_update_prompted = False
+        app.extension_reload_deadline = None
+        app.extension_connected = False
+        app.chrome_launch_requested = False
+        app.force_open_checks = set()
+        app.root = Mock()
+        app._set_status = Mock()
+        app._set_extension_status = Mock()
+        app._hide_status = Mock()
+        app.show_extension_install_guide = Mock()
+        app._find_chrome_path = Mock(return_value=Path('C:/SyntheticChrome/chrome.exe'))
+        app._is_chrome_running = Mock(return_value=True)
+        for target, replacement in [('autochzzk.CHROME_TABS', self.tabs),
+                                    ('autochzzk.time.monotonic', lambda: self.now)]:
+            patcher = patch(target, replacement)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        launcher = patch('autochzzk.subprocess.Popen')
+        self.launch = launcher.start()
+        self.addCleanup(launcher.stop)
+
+    def test_startup_callbacks_launch_chrome_once_for_multiple_live_channels(self):
+        app = self.app
+        app.allow_browser_open_after = 105.0
+        for channel in app.channels:
+            app._open_live(channel, 'Synthetic live')
+        callbacks = [call.args[1] for call in app.root.after.call_args_list]
+        self.assertEqual(len(callbacks), 3)
+        self.launch.assert_not_called()
+
+        self.now = 105.1
+        for callback in callbacks:
+            callback()
+
+        self.assertEqual(self.launch.call_count, 1)
+        self.assertTrue(app.chrome_launch_requested)
+        self.assertEqual(app.extension_connection_deadline, 120.1)
+        self.assertEqual(self.tabs.pending_commands('synthetic-client'), [])
+
+    def test_first_report_skips_restored_broadcasts_and_opens_only_missing_tabs(self):
+        app = self.app
+        for channel in app.channels:
+            app._open_live(channel, 'Synthetic live')
+        self.now = 103.0
+        self.tabs.update('synthetic-client', {app.channels[0]['id']},
+                         {'gaia:synthetic-profile'}, True, REQUIRED_EXTENSION_VERSION)
+
+        app._check_extension_connection()
+        for channel in app.channels:
+            app._open_live(channel, 'Synthetic live')
+
+        self.assertEqual(self.launch.call_count, 1)
+        self.assertFalse(app.chrome_launch_requested)
+        self.assertEqual(app.force_open_checks, {channel['id'] for channel in app.channels})
+        commands = self.tabs.pending_commands('synthetic-client')
+        self.assertEqual({command['url'] for command in commands}, {
+            'https://chzzk.naver.com/live/' + 'b' * 32,
+            'https://chzzk.naver.com/live/' + 'c' * 32,
+        })
+        self.assertTrue(all(command['action'] == 'open' for command in commands))
+
+    def test_connection_timeout_does_not_launch_another_running_chrome_window(self):
+        app = self.app
+        app._open_live(app.channels[0], 'Synthetic live')
+        self.now = 116.0
+        app._check_extension_connection()
+
+        app._open_live(app.channels[1], 'Synthetic live')
+        app._open_live(app.channels[2], 'Synthetic live')
+
+        self.assertEqual(self.launch.call_count, 1)
+        self.assertTrue(app.chrome_launch_requested)
+        app.show_extension_install_guide.assert_called_once()
+
+    def test_closed_chrome_can_be_launched_again_after_connection_timeout(self):
+        app = self.app
+        app._open_live(app.channels[0], 'Synthetic live')
+        self.now = 116.0
+        app._is_chrome_running.return_value = False
+
+        app._open_live(app.channels[1], 'Synthetic live')
+
+        self.assertEqual(self.launch.call_count, 2)
+        self.assertTrue(app.chrome_launch_requested)
+
+    def test_profile_switch_allows_launching_the_new_profile(self):
+        app = self.app
+        app._open_live(app.channels[0], 'Synthetic live')
+        app.selected_chrome_profile = {'directory': 'Profile 2'}
+
+        app._reset_extension_connection_check()
+        app._open_live(app.channels[1], 'Synthetic live')
+
+        self.assertEqual(self.launch.call_count, 2)
+        self.assertEqual(self.launch.call_args.args[0][1], '--profile-directory=Profile 2')
 
 
 class ChannelToggleUITests(unittest.TestCase):

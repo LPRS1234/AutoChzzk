@@ -1,5 +1,5 @@
 #define MyAppName "AutoChzzk"
-#define MyAppVersion "2.1.5"
+#define MyAppVersion "2.1.6"
 #define MyAppPublisher "LPRS1234"
 #define MyAppExeName "AutoChzzk.exe"
 
