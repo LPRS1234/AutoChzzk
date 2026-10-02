@@ -386,6 +386,7 @@ class ListLayoutUITests(unittest.TestCase):
         app.status_value = tk.StringVar()
         app.extension_status_value = tk.StringVar(value='Chrome 확장 프로그램 연결 확인 중…')
         app.version_value = tk.StringVar(value='현재 버전 · 최신 버전 확인 중…')
+        app.on_close = Mock()
         app._configure_styles()
         app._build_ui()
         app._refresh_list()
@@ -432,11 +433,49 @@ class ListLayoutUITests(unittest.TestCase):
         self.assertIsNone(app.changelog_dialog)
         self.assertIs(self.root.grab_current(), app.settings_dialog)
 
+    def test_main_exit_button_calls_quit_and_settings_has_no_exit_button(self):
+        app = self.app
+        app.quit_button.invoke()
+        app.on_close.assert_called_once_with()
+        settings_buttons = [widget.cget('text') for widget in self.descendants(app.settings_dialog)
+                            if widget.winfo_class() in ('Button', 'TButton')]
+        self.assertNotIn('앱 종료', settings_buttons)
+
+    def descendants(self, widget):
+        for child in widget.winfo_children():
+            yield child
+            yield from self.descendants(child)
+
     def test_channel_menu_can_open_interval_editor_after_posting(self):
         app = self.app
         app.channels = [dict(id='a' * 32, name='Synthetic', enabled=True, interval=60)]
         app._refresh_list()
-        with patch.object(tk.Menu, 'tk_popup'):
-            app.show_channel_menu('a' * 32)
-        app.channel_menu.invoke(2)
+        self.root.geometry('620x650+30000+30000')
+        self.root.deiconify()
+        self.root.update()
+        app.show_channel_menu('a' * 32)
+        menu = app.channel_menu
+        self.assertIsInstance(menu, tk.Toplevel)
+        edit_button = next(widget for widget in self.descendants(menu)
+                           if isinstance(widget, tk.Button) and widget.cget('text') == '확인 간격 수정')
+        edit_button.invoke()
+        self.assertFalse(menu.winfo_exists())
+        self.assertIsNone(self.root.grab_current())
         self.assertIn('a' * 32, app.interval_editors)
+
+    def test_channel_menu_delete_action_closes_menu_before_confirmation(self):
+        app = self.app
+        app.channels = [dict(id='a' * 32, name='Synthetic', enabled=True, interval=15)]
+        app._refresh_list()
+        app.confirm_remove_channel = Mock()
+        self.root.geometry('620x650+30000+30000')
+        self.root.deiconify()
+        self.root.update()
+        app.show_channel_menu('a' * 32)
+        menu = app.channel_menu
+        delete_button = next(widget for widget in self.descendants(menu)
+                             if isinstance(widget, tk.Button) and widget.cget('text') == '채널 삭제')
+        delete_button.invoke()
+        self.assertFalse(menu.winfo_exists())
+        self.assertIsNone(self.root.grab_current())
+        app.confirm_remove_channel.assert_called_once_with('a' * 32, 'Synthetic')

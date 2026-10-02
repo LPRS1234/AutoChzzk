@@ -210,3 +210,158 @@ class MarqueeText(tk.Canvas):
         except tk.TclError:
             return
 
+
+class ChannelOptionsMenu(tk.Toplevel):
+    """A small channel menu that stays inside the app and owns its input grab."""
+
+    def __init__(
+        self, parent, *, interval: int, edit_command: Callable[[], None],
+        delete_command: Callable[[], None], bg: str, text_color: str,
+        muted: str, danger: str,
+    ) -> None:
+        super().__init__(parent, bg='#414550', bd=0, highlightthickness=0)
+        self.withdraw()
+        self.overrideredirect(True)
+        self._owner = parent.winfo_toplevel()
+        self.transient(self._owner)
+        self._closed = False
+        self._previous_focus = None
+        self._previous_grab = None
+        self._previous_grab_status = None
+        self._focus_after_id = None
+        self._commands = (edit_command, delete_command)
+        self._buttons = []
+        self._active_index = 0
+        self._bg = bg
+        self._hover_bg = '#3A3D47'
+
+        body = tk.Frame(self, bg=bg, padx=8, pady=8)
+        body.pack(fill='both', expand=True, padx=1, pady=1)
+        metadata = tk.Frame(body, bg=bg)
+        metadata.pack(fill='x', padx=8, pady=(3, 6))
+        tk.Label(
+            metadata, text='확인 간격', bg=bg, fg=muted,
+            font=('Malgun Gothic', 9),
+        ).pack(side='left')
+        tk.Label(
+            metadata, text=f'{interval}초마다', bg=bg, fg=muted,
+            font=('Malgun Gothic', 9),
+        ).pack(side='right')
+        tk.Frame(body, bg='#414550', height=1).pack(fill='x', padx=8, pady=(0, 6))
+        for index, (label, color) in enumerate((
+            ('확인 간격 수정', text_color), ('채널 삭제', danger),
+        )):
+            button = tk.Button(
+                body, text=label, command=lambda value=index: self._invoke(value),
+                bg=bg, fg=color, activebackground=self._hover_bg, activeforeground=color,
+                font=('Malgun Gothic', 10), anchor='w', padx=10, pady=7,
+                relief='flat', bd=0, highlightthickness=0, takefocus=1, cursor='hand2',
+            )
+            button.pack(fill='x')
+            button.bind('<Enter>', lambda _event, value=index: self._select(value, focus=False))
+            button.bind('<FocusIn>', lambda _event, value=index: self._select(value, focus=False))
+            self._buttons.append(button)
+
+        self.bind('<Escape>', self._dismiss)
+        self.bind('<MouseWheel>', self._dismiss)
+        self.bind('<Button-4>', self._dismiss)
+        self.bind('<Button-5>', self._dismiss)
+        self.bind('<ButtonPress>', self._on_click)
+        self.bind('<FocusOut>', self._on_focus_out)
+        self.bind('<Down>', lambda _event: self._move(1))
+        self.bind('<Up>', lambda _event: self._move(-1))
+        self.bind('<Tab>', lambda _event: self._move(1))
+        self.bind('<Shift-Tab>', lambda _event: self._move(-1))
+        self.bind('<Return>', lambda _event: self._invoke(self._active_index))
+
+    def show(self, anchor: tk.Widget) -> None:
+        """Align to the row's right edge, flipping upward near the app's bottom."""
+        if self._closed:
+            return
+        self._owner.update_idletasks()
+        self.update_idletasks()
+        width, height = max(190, self.winfo_reqwidth()), self.winfo_reqheight()
+        left, top = self._owner.winfo_rootx() + 8, self._owner.winfo_rooty() + 8
+        right = self._owner.winfo_rootx() + self._owner.winfo_width() - 8
+        bottom = self._owner.winfo_rooty() + self._owner.winfo_height() - 8
+        x = anchor.winfo_rootx() + anchor.winfo_width() - width - 16
+        y = anchor.winfo_rooty() + anchor.winfo_height() + 4
+        if y + height > bottom:
+            y = anchor.winfo_rooty() - height - 4
+        x, y = max(left, min(x, right - width)), max(top, min(y, bottom - height))
+        self.geometry(f'{width}x{height}+{x}+{y}')
+        self._previous_focus = self._owner.focus_get()
+        self._previous_grab = self._owner.grab_current()
+        if self._previous_grab is not None:
+            self._previous_grab_status = self._previous_grab.grab_status()
+        self.deiconify()
+        self.lift()
+        self.grab_set()
+        self._buttons[0].focus_force()
+
+    def close(self) -> None:
+        """Release menu input before a caller opens an editor or confirmation."""
+        if self._closed:
+            return
+        self._closed = True
+        if self._focus_after_id is not None:
+            self.after_cancel(self._focus_after_id)
+            self._focus_after_id = None
+        focus = self.focus_get()
+        restore_focus = focus is not None and focus.winfo_toplevel() is self
+        if self.grab_current() is self:
+            self.grab_release()
+            previous_grab = self._previous_grab
+            if previous_grab is not None and previous_grab.winfo_exists():
+                if self._previous_grab_status == 'global':
+                    previous_grab.grab_set_global()
+                else:
+                    previous_grab.grab_set()
+        super().destroy()
+        if restore_focus and self._previous_focus is not None and self._previous_focus.winfo_exists():
+            self._previous_focus.focus_force()
+
+    def destroy(self) -> None:
+        self.close()
+
+    def _select(self, index: int, *, focus: bool = True) -> None:
+        self._active_index = index
+        for position, button in enumerate(self._buttons):
+            button.configure(bg=self._hover_bg if position == index else self._bg)
+        if focus:
+            self._buttons[index].focus_set()
+
+    def _move(self, direction: int) -> str:
+        self._select((self._active_index + direction) % len(self._buttons))
+        return 'break'
+
+    def _invoke(self, index: int) -> str:
+        if not self._closed:
+            command = self._commands[index]
+            self.close()
+            command()
+        return 'break'
+
+    def _dismiss(self, _event=None) -> str:
+        self.close()
+        return 'break'
+
+    def _on_click(self, event) -> str | None:
+        if not (
+            self.winfo_rootx() <= event.x_root < self.winfo_rootx() + self.winfo_width()
+            and self.winfo_rooty() <= event.y_root < self.winfo_rooty() + self.winfo_height()
+        ):
+            return self._dismiss()
+        return None
+
+    def _on_focus_out(self, _event) -> None:
+        # Switching between menu rows also sends FocusOut; check after the move.
+        if not self._closed and self._focus_after_id is None:
+            self._focus_after_id = self.after_idle(self._dismiss_if_focus_left)
+
+    def _dismiss_if_focus_left(self) -> None:
+        self._focus_after_id = None
+        focus = self.focus_get()
+        if focus is None or focus.winfo_toplevel() is not self:
+            self.close()
+

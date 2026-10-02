@@ -57,7 +57,7 @@ from autochzzk_core.updater import (
     launch_installer,
     verify_installer,
 )
-from autochzzk_core.widgets import AnimatedToggle, MarqueeText
+from autochzzk_core.widgets import AnimatedToggle, ChannelOptionsMenu, MarqueeText
 
 try:
     import pystray
@@ -159,6 +159,8 @@ class AutoChzzkApp:
         style.map("Small.TButton", background=[("active", "#50545F")])
         style.configure("HeaderRefresh.TButton", background=self.BG, foreground=self.TEXT, borderwidth=0, font=("Malgun Gothic", 8, "bold"), padding=(3, 3))
         style.map("HeaderRefresh.TButton", background=[("active", self.BG), ("pressed", self.BG)])
+        style.configure("Exit.TButton", background=self.INPUT, foreground=self.TEXT, borderwidth=0, font=("Malgun Gothic", 9), padding=(10, 5))
+        style.map("Exit.TButton", background=[("active", "#3A3D47"), ("pressed", "#3A3D47")])
         style.configure("SmallAccent.TButton", background=self.ACCENT, foreground="#08251D", borderwidth=0, font=("Malgun Gothic", 8, "bold"), padding=(5, 5))
         style.map("SmallAccent.TButton", background=[("active", "#38EDBB")])
         style.configure("DialogAccent.TButton", background=self.ACCENT, foreground="#08251D", borderwidth=0, font=("Malgun Gothic", 9, "bold"), padding=(10, 7))
@@ -177,6 +179,7 @@ class AutoChzzkApp:
     def _build_ui(self) -> None:
         self.add_dialog = None
         self.add_status_label = None
+        self.channel_menu = None
         self.connection_state_value = tk.StringVar(value="확인 중")
         self.version_summary_value = tk.StringVar(value=f"v{APP_VERSION}")
         outer = tk.Frame(self.root, bg=self.BG, padx=26, pady=20)
@@ -220,6 +223,8 @@ class AutoChzzkApp:
         self.current_profile_label.pack(side="left")
         self.current_profile_label.bind("<Button-1>", lambda _event: self.show_settings())
         tk.Button(self.version_row, textvariable=self.connection_state_value, command=self.show_settings, bg=self.BG, fg=self.MUTED, activebackground=self.BG, activeforeground=self.TEXT, relief="flat", bd=0, font=("Malgun Gothic", 8), cursor="hand2").pack(side="left")
+        self.quit_button = ttk.Button(self.version_row, text="앱 종료", command=self.on_close, style="Exit.TButton", cursor="hand2")
+        self.quit_button.pack(side="right", padx=(12, 0))
         tk.Button(self.version_row, textvariable=self.version_summary_value, command=self.show_changelog, bg=self.BG, fg=self.MUTED, activebackground=self.BG, activeforeground=self.TEXT, relief="flat", bd=0, font=("Segoe UI", 8), cursor="hand2").pack(side="right")
 
         list_box = tk.Frame(outer, bg=self.SURFACE)
@@ -280,7 +285,6 @@ class AutoChzzkApp:
         window_actions = tk.Frame(card, bg=self.SURFACE)
         window_actions.pack(fill="x")
         ttk.Button(window_actions, text="트레이로 숨기기", style="DialogDark.TButton", command=self._hide_from_settings, cursor="hand2").pack(side="left")
-        ttk.Button(window_actions, text="앱 종료", style="DialogDark.TButton", command=self.on_close, cursor="hand2").pack(side="right")
         ttk.Button(card, text="닫기", style="DialogAccent.TButton", command=self._close_settings_dialog, cursor="hand2").pack(anchor="e", pady=(18, 0))
         dialog.protocol("WM_DELETE_WINDOW", self._close_settings_dialog)
         dialog.bind("<Escape>", lambda _event: self._close_settings_dialog())
@@ -993,6 +997,9 @@ class AutoChzzkApp:
             self._set_status("방송 상태를 확인 중입니다. 잠시 후 채널 추가를 다시 눌러 주세요.")
 
     def _refresh_list(self) -> None:
+        menu = getattr(self, "channel_menu", None)
+        if menu is not None and menu.winfo_exists():
+            menu.close()
         for child in self.list_frame.winfo_children(): child.destroy()
         self.channel_rows = {}
         self.detection_buttons = {}
@@ -1055,17 +1062,15 @@ class AutoChzzkApp:
         if row is None or not row.winfo_exists():
             return
         previous_menu = getattr(self, "channel_menu", None)
-        if previous_menu is not None:
-            previous_menu.destroy()
-        menu = self.channel_menu = tk.Menu(self.root, tearoff=False, bg=self.INPUT, fg=self.TEXT, activebackground="#3A3D47", activeforeground=self.TEXT, font=("Malgun Gothic", 9), bd=0)
-        menu.add_command(label=f"{channel.get('interval', 60)}초마다 확인", state="disabled")
-        menu.add_separator()
-        menu.add_command(label="확인 간격 수정", command=lambda: self.show_interval_editor(channel_id))
-        menu.add_command(label="채널 삭제", foreground=self.DANGER, command=lambda: self.confirm_remove_channel(channel_id, channel.get("name") or channel_id))
-        try:
-            menu.tk_popup(row.winfo_rootx() + row.winfo_width() - 160, row.winfo_rooty() + row.winfo_height() - 4)
-        finally:
-            menu.grab_release()
+        if previous_menu is not None and previous_menu.winfo_exists():
+            previous_menu.close()
+        menu = self.channel_menu = ChannelOptionsMenu(
+            self.root, interval=channel.get("interval", 60),
+            edit_command=lambda: self.show_interval_editor(channel_id),
+            delete_command=lambda: self.confirm_remove_channel(channel_id, channel.get("name") or channel_id),
+            bg=self.INPUT, text_color=self.TEXT, muted=self.MUTED, danger=self.DANGER,
+        )
+        menu.show(row)
 
     def _live_status_display(self, channel_id: str) -> tuple[str, str]:
         live_state = self.live_info.get(channel_id)
