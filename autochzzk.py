@@ -211,7 +211,7 @@ class AutoChzzkApp:
         self.status_dot = tk.Canvas(self.status_frame, width=10, height=10, bg="#1D2C29", highlightthickness=0)
         self.status_dot_item = self.status_dot.create_oval(3, 3, 7, 7, fill=self.ACCENT, outline="")
         self.status_dot.pack(side="left", padx=(0, 7))
-        tk.Label(self.status_frame, textvariable=self.status_value, fg=self.TEXT, bg="#1D2C29", font=("Malgun Gothic", 8), wraplength=460, justify="left").pack(side="left", fill="x", expand=True)
+        tk.Label(self.status_frame, textvariable=self.status_value, fg=self.TEXT, bg="#1D2C29", font=("Malgun Gothic", 8), wraplength=460, justify="left", anchor="w").pack(side="left", fill="x", expand=True)
         self.version_row = tk.Frame(footer, bg=self.BG)
         self.version_row.pack(fill="x", pady=(8, 0))
         self.extension_status_dot = tk.Label(self.version_row, text="●", fg=self.MUTED, bg=self.BG, font=("Segoe UI", 7))

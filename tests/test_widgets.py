@@ -2,6 +2,8 @@ import time
 import tkinter as tk
 import unittest
 
+from PIL import ImageTk
+
 from autochzzk_core import widgets
 
 
@@ -34,6 +36,22 @@ class AnimatedToggleTests(unittest.TestCase):
 
     def knob_x(self, toggle):
         return toggle.coords('knob')[0]
+
+    def switch_image(self, toggle, part):
+        self.assertEqual(
+            toggle.type(part), 'image',
+            'Curved switch edges need pixels with partial coverage',
+        )
+        return ImageTk.getimage(getattr(toggle, f'_{part}_image'))
+
+    def test_curved_edges_include_partial_coverage_pixels(self):
+        toggle = self.make_toggle(value=True)
+        for part in ('track', 'knob'):
+            with self.subTest(part=part):
+                alpha = self.switch_image(toggle, part).getchannel('A')
+                self.assertEqual(alpha.getpixel((0, 0)), 0)
+                self.assertEqual(alpha.getpixel((alpha.width // 2, alpha.height // 2)), 255)
+                self.assertGreater(sum(alpha.histogram()[1:255]), 0)
 
     def test_immediate_state_moves_knob_and_updates_display(self):
         toggle = self.make_toggle()
@@ -124,13 +142,34 @@ class AnimatedToggleTests(unittest.TestCase):
         toggle.event_generate('<Button-1>', x=50, y=17)
         toggle.focus_force()
         self.root.update()
+        self.assertEqual(int(toggle.cget('highlightthickness')), 0)
+        self.assertEqual(self.switch_image(toggle, 'track').getpixel((0, 14))[3], 0)
         toggle.event_generate('<KeyPress-space>')
         toggle.event_generate('<KeyPress-Return>')
         self.root.update()
         self.assertEqual(requests, [True, True, True])
         self.assertFalse(toggle.get_value())
-        self.assertGreater(int(toggle.cget('highlightthickness')), 0)
-        self.assertNotEqual(toggle.cget('highlightcolor'), toggle.cget('highlightbackground'))
+        self.assertGreater(self.switch_image(toggle, 'track').getpixel((0, 14))[3], 0)
+
+        toggle.event_generate('<Button-1>', x=50, y=17)
+        self.root.update()
+        self.assertEqual(self.switch_image(toggle, 'track').getpixel((0, 14))[3], 0)
+
+    def test_tab_focus_shows_a_small_ring_and_clears_when_leaving(self):
+        preceding = tk.Button(self.root, text='Previous')
+        preceding.pack()
+        toggle = self.make_toggle()
+        preceding.focus_force()
+        self.root.update()
+        preceding.event_generate('<KeyPress-Tab>')
+        self.root.update()
+        self.assertIs(self.root.focus_get(), toggle)
+        self.assertGreater(self.switch_image(toggle, 'track').getpixel((0, 14))[3], 0)
+
+        toggle.event_generate('<KeyPress-Tab>')
+        self.root.update()
+        self.assertIsNot(self.root.focus_get(), toggle)
+        self.assertEqual(self.switch_image(toggle, 'track').getpixel((0, 14))[3], 0)
 
     def test_destroy_cancels_pending_animation(self):
         toggle = self.make_toggle()
