@@ -161,7 +161,7 @@ class MarqueeText(tk.Canvas):
         self.fg = fg
         self.text_font = tkfont.Font(font=font)
         self.text_width = self.text_font.measure(text)
-        self.item = self.create_text(0, height // 2, text=text, fill=fg, font=font, anchor="w")
+        self.item = self.create_text(1, height // 2, text=text, fill=fg, font=font, anchor="w")
         self.scrolling = False
         self.after_id = None
         self.bind("<Configure>", self._fit_text)
@@ -182,15 +182,15 @@ class MarqueeText(tk.Canvas):
         self.text_width = self.text_font.measure(text)
         self.itemconfigure(self.item, text=text, fill=next_fg)
         self.scrolling = False
-        self.coords(self.item, 0, self.winfo_height() // 2)
+        self.coords(self.item, 1, self.winfo_height() // 2)
         self._fit_text()
 
     def _fit_text(self, _event=None) -> None:
         if not self.winfo_exists():
             return
-        if self.text_width <= self.winfo_width():
+        if self.text_width + 2 <= self.winfo_width():
             self.scrolling = False
-            self.coords(self.item, 0, self.winfo_height() // 2)
+            self.coords(self.item, 1, self.winfo_height() // 2)
             return
         self.scrolling = True
         if self.after_id is None:

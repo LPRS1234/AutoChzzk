@@ -1159,7 +1159,7 @@ class AutoChzzkApp:
         live_status.pack(fill="x", pady=(2, 0))
         self.live_status_widgets[channel["id"]] = live_status
         check_text, check_color = self._check_status_display(channel["id"])
-        check_status = tk.Label(details, text=check_text, fg=check_color, bg=self.SURFACE, font=("Malgun Gothic", 8), anchor="w")
+        check_status = tk.Label(details, text=check_text, fg=check_color, bg=self.SURFACE, font=("Malgun Gothic", 8), anchor="w", bd=0, padx=1, pady=3)
         check_status.pack(fill="x", pady=(3, 0))
         self.check_status_widgets[channel["id"]] = check_status
         tk.Frame(self.list_frame, bg=self.INPUT, height=1).pack(fill="x")
