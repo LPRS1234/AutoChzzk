@@ -214,13 +214,6 @@ class AutoChzzkApp:
         monitor_controls.pack(fill="x", pady=(0, 12))
         self.refresh_all_button = ttk.Button(monitor_controls, text="전체 갱신", style="Small.TButton", command=self.refresh_all_channels, cursor="hand2")
         self.refresh_all_button.pack(side="left")
-        self.pause_30_button = ttk.Button(monitor_controls, text="30분 쉬기", style="Small.TButton", command=lambda: self.pause_monitoring(30), cursor="hand2")
-        self.pause_30_button.pack(side="left", padx=(8, 0))
-        self.pause_60_button = ttk.Button(monitor_controls, text="1시간 쉬기", style="Small.TButton", command=lambda: self.pause_monitoring(60), cursor="hand2")
-        self.pause_60_button.pack(side="left", padx=(8, 0))
-        self.resume_button = ttk.Button(monitor_controls, text="다시 시작", style="SmallAccent.TButton", command=self.resume_monitoring, cursor="hand2")
-        self.pause_value = tk.StringVar()
-        self.pause_label = tk.Label(outer, textvariable=self.pause_value, fg=self.ACCENT, bg=self.BG, font=("Malgun Gothic", 9), anchor="w")
         self.monitor_controls = monitor_controls
 
         self.extension_notice = tk.Frame(outer, bg=self.SURFACE, padx=13, pady=10)

@@ -47,18 +47,17 @@ class MonitorControlsUITests(unittest.TestCase):
         self.assertFalse(self.app.channels[1]['enabled'])
         self.assertEqual(str(self.app.refresh_all_button.cget('state')), 'disabled')
 
-    def test_pause_and_resume_buttons_preserve_channel_flags(self):
-        app = self.app
-        with patch('autochzzk.time.monotonic', return_value=100):
-            app.pause_30_button.invoke()
-            self.assertEqual(app.pause_until, 1900)
-            self.root.update_idletasks()
-            self.assertTrue(app.resume_button.winfo_ismapped())
-            self.assertIn('30', app.pause_value.get())
-            app.resume_button.invoke()
-        self.assertEqual(app.pause_until, 0)
-        self.assertEqual([channel['enabled'] for channel in app.channels], [True, False])
-        self.assertEqual(app.force_open_checks, {'a' * 32})
+    def test_main_screen_has_refresh_without_pause_controls(self):
+        def visible_buttons(widget):
+            for child in widget.winfo_children():
+                if child.winfo_class() in ('Button', 'TButton') and child.winfo_ismapped():
+                    yield child.cget('text')
+                yield from visible_buttons(child)
+
+        labels = list(visible_buttons(self.root))
+        self.assertIn('전체 갱신', labels)
+        self.assertFalse(any('쉬기' in label or label == '다시 시작' for label in labels))
+        self.assertEqual([channel['enabled'] for channel in self.app.channels], [True, False])
 
     def test_error_status_remains_in_channel_row_after_footer_clears(self):
         app = self.app
@@ -75,8 +74,7 @@ class MonitorControlsUITests(unittest.TestCase):
         self.assertIs(app.channel_rows[channel_id], row)
 
     def test_header_actions_fit_minimum_window_width(self):
-        for button in [self.app.refresh_all_button, self.app.pause_30_button,
-                       self.app.pause_60_button]:
+        for button in [self.app.refresh_all_button]:
             self.assertTrue(button.winfo_ismapped())
             self.assertGreaterEqual(button.winfo_rootx(), self.root.winfo_rootx())
             self.assertLessEqual(button.winfo_rootx() + button.winfo_width(),
