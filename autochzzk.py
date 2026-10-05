@@ -117,6 +117,8 @@ class AutoChzzkApp:
         self.active_dialog = None
         self.changelog_dialog = None
         self.update_download_in_progress = False
+        self.update_dialog_pending = False
+        self.available_update_info: UpdateInfo | None = None
         self.update_prompted_version: str | None = None
         self.extension_setup_prompted = False
         self.extension_update_prompted = False
@@ -241,7 +243,10 @@ class AutoChzzkApp:
         tk.Button(self.version_row, textvariable=self.connection_state_value, command=self.show_settings, bg=self.BG, fg=self.MUTED, activebackground=self.BG, activeforeground=self.TEXT, relief="flat", bd=0, font=("Malgun Gothic", 8), cursor="hand2").pack(side="left")
         self.quit_button = ttk.Button(self.version_row, text="앱 종료", command=self.on_close, style="Exit.TButton", cursor="hand2")
         self.quit_button.pack(side="right", padx=(12, 0))
-        tk.Button(self.version_row, textvariable=self.version_summary_value, command=self.show_changelog, bg=self.BG, fg=self.MUTED, activebackground=self.BG, activeforeground=self.TEXT, relief="flat", bd=0, font=("Segoe UI", 8), cursor="hand2").pack(side="right")
+        self.version_summary_button = tk.Button(self.version_row, textvariable=self.version_summary_value, command=self.show_changelog, bg=self.BG, fg=self.MUTED, activebackground=self.BG, activeforeground=self.TEXT, relief="flat", bd=0, font=("Segoe UI", 8), cursor="hand2")
+        self.version_summary_button.pack(side="right")
+        self.update_button = ttk.Button(self.version_row, text="업데이트", command=self._request_update, style="SmallAccent.TButton", cursor="hand2")
+        self._refresh_update_button()
 
         list_box = tk.Frame(outer, bg=self.SURFACE)
         list_box.pack(fill="both", expand=True)
@@ -606,9 +611,7 @@ class AutoChzzkApp:
             latest_version = get_release_version(release)
             self._ui(self._set_latest_version, latest_version)
             update_info = find_available_update(release)
-            if update_info is None or self.update_prompted_version == update_info.version:
-                return
-            self._ui(self._start_update_download, update_info)
+            self._ui(self._set_available_update, update_info)
         except (UpdateError, urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError, TimeoutError, OSError):
             # An update check must never interrupt normal channel monitoring.
             self._ui(self._set_latest_version, None)
@@ -621,12 +624,43 @@ class AutoChzzkApp:
             summary = "확인 실패" if version is None else "최신" if version == APP_VERSION else f"최신 {version}"
             self.version_summary_value.set(f"v{APP_VERSION} · {summary}")
 
+    def _set_available_update(self, update_info: UpdateInfo | None) -> None:
+        self.available_update_info = update_info
+        self._refresh_update_button()
+
+    def _refresh_update_button(self) -> None:
+        button = getattr(self, "update_button", None)
+        if button is None:
+            return
+        if getattr(self, "available_update_info", None) is None:
+            button.pack_forget()
+            return
+        downloading = getattr(self, "update_download_in_progress", False)
+        pending = getattr(self, "update_dialog_pending", False)
+        text = "다운로드 중" if downloading else "잠시 대기" if pending else "업데이트"
+        button.configure(text=text, state="disabled" if downloading or pending else "normal")
+        if not button.winfo_manager():
+            button.pack(side="right", padx=(8, 0), before=self.version_summary_button)
+
+    def _request_update(self) -> None:
+        update_info = self.available_update_info
+        if update_info is None or self.stop_event.is_set() or self.update_download_in_progress or self.update_dialog_pending:
+            return
+        if self.active_dialog is not None and self.active_dialog.winfo_exists():
+            return
+        # Explicit clicks can reopen an update declined with "Later".
+        # The downloader reuses an existing installer after verifying its hash.
+        self.update_prompted_version = None
+        self._start_update_download(update_info)
+
     def _start_update_download(self, update_info: UpdateInfo) -> None:
-        if self.stop_event.is_set() or self.update_download_in_progress:
+        if self.stop_event.is_set() or self.update_download_in_progress or self.update_dialog_pending:
             return
         if self.update_prompted_version == update_info.version:
             return
         self.update_download_in_progress = True
+        self.available_update_info = update_info
+        self._refresh_update_button()
         self._set_status(f"AutoChzzk {update_info.version} 업데이트를 다운로드하는 중입니다…")
         threading.Thread(target=self._download_update, args=(update_info,), daemon=True).start()
 
@@ -656,12 +690,16 @@ class AutoChzzkApp:
 
     def _update_download_failed(self, update_info: UpdateInfo) -> None:
         self.update_download_in_progress = False
+        self.update_dialog_pending = True
+        self._refresh_update_button()
         self._set_status(f"AutoChzzk {update_info.version} 업데이트를 다운로드하지 못했습니다.", True)
         if self.stop_event.is_set():
             return
         if self.active_dialog is not None and self.active_dialog.winfo_exists():
             self.root.after(1_000, lambda: self._update_download_failed(update_info))
             return
+        self.update_dialog_pending = False
+        self._refresh_update_button()
         self._show_app_dialog(
             "업데이트 다운로드 실패",
             "업데이트 파일을 다운로드하거나 검증하지 못했습니다.\n인터넷 연결을 확인한 뒤 다시 시도해 주세요.",
@@ -672,6 +710,8 @@ class AutoChzzkApp:
 
     def _update_download_complete(self, update_info: UpdateInfo, installer_path: Path) -> None:
         self.update_download_in_progress = False
+        self.update_dialog_pending = True
+        self._refresh_update_button()
         self._set_status(f"AutoChzzk {update_info.version} 업데이트를 설치할 준비가 됐습니다.")
         self._offer_update(update_info, installer_path)
 
@@ -682,6 +722,8 @@ class AutoChzzkApp:
             self.root.after(1_000, lambda: self._offer_update(update_info, installer_path))
             return
         self.update_prompted_version = update_info.version
+        self.update_dialog_pending = False
+        self._refresh_update_button()
         self._restore_window()
         self._show_app_dialog(
             "업데이트 준비 완료",
