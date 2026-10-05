@@ -210,6 +210,15 @@ class ChromeTabState:
             self.pending_closes.pop(command_id, None)
             self.pending_reloads.pop(command_id, None)
 
+    def cancel_tab_commands(self) -> set[str]:
+        """Cancel queued tab actions, retaining updates and canceled-close URLs."""
+        with self.lock:
+            self._expire_commands()
+            canceled_closes = {url for url, _client_id, _created in self.pending_closes.values()}
+            self.pending_opens.clear()
+            self.pending_closes.clear()
+            return canceled_closes
+
 
 CHROME_TABS = ChromeTabState()
 

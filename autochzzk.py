@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from math import ceil
 import os
 from queue import SimpleQueue
 import subprocess
@@ -97,6 +98,14 @@ class AutoChzzkApp:
         self.watching_indicators: dict[str, tk.Label] = {}
         self.editing_channel_id: str | None = None
         self.last_checked = {}
+        self.last_successful_check: dict[str, float] = {}
+        self.check_errors: set[str] = set()
+        self.check_status_widgets: dict[str, tk.Label] = {}
+        self.manual_checks: set[str] = set()
+        self.refresh_batch: set[str] = set()
+        self.refresh_failed: set[str] = set()
+        self.refresh_total = 0
+        self.pause_until = 0.0
         self.lookup_pool = LookupPool()
         self.pending_additions = set()
         self.channel_generations = {}
@@ -131,6 +140,7 @@ class AutoChzzkApp:
         root.after(1_000, self._refresh_extension_status)
         root.after(5_000, self._check_selected_profile_exists)
         root.after(50, self._drain_ui_queue)
+        root.after(1_000, self._refresh_check_indicators)
         self._monitor()
         if self.storage_errors:
             self._show_app_dialog("저장 파일 확인", "\n".join(self.storage_errors))
@@ -200,6 +210,19 @@ class AutoChzzkApp:
         self.count_label = tk.Label(titles, fg=self.MUTED, bg=self.BG, font=("Malgun Gothic", 8))
         self.count_label.pack(anchor="w", pady=(4, 0))
 
+        monitor_controls = tk.Frame(outer, bg=self.BG)
+        monitor_controls.pack(fill="x", pady=(0, 12))
+        self.refresh_all_button = ttk.Button(monitor_controls, text="전체 갱신", style="Small.TButton", command=self.refresh_all_channels, cursor="hand2")
+        self.refresh_all_button.pack(side="left")
+        self.pause_30_button = ttk.Button(monitor_controls, text="30분 쉬기", style="Small.TButton", command=lambda: self.pause_monitoring(30), cursor="hand2")
+        self.pause_30_button.pack(side="left", padx=(8, 0))
+        self.pause_60_button = ttk.Button(monitor_controls, text="1시간 쉬기", style="Small.TButton", command=lambda: self.pause_monitoring(60), cursor="hand2")
+        self.pause_60_button.pack(side="left", padx=(8, 0))
+        self.resume_button = ttk.Button(monitor_controls, text="다시 시작", style="SmallAccent.TButton", command=self.resume_monitoring, cursor="hand2")
+        self.pause_value = tk.StringVar()
+        self.pause_label = tk.Label(outer, textvariable=self.pause_value, fg=self.ACCENT, bg=self.BG, font=("Malgun Gothic", 9), anchor="w")
+        self.monitor_controls = monitor_controls
+
         self.extension_notice = tk.Frame(outer, bg=self.SURFACE, padx=13, pady=10)
         ttk.Button(self.extension_notice, text="연결 설정", style="Small.TButton", command=self.show_settings, cursor="hand2").pack(side="right", padx=(10, 0))
         tk.Label(self.extension_notice, textvariable=self.extension_status_value, fg=self.DANGER, bg=self.SURFACE, font=("Malgun Gothic", 8), wraplength=340, justify="left").pack(side="left", fill="x", expand=True)
@@ -240,6 +263,8 @@ class AutoChzzkApp:
         self.canvas.bind("<Configure>", lambda event: self.canvas.itemconfigure(self.list_window, width=event.width))
         self.root.bind_all("<MouseWheel>", self._on_list_mousewheel, add="+")
         self._build_settings_dialog()
+        self._update_pause_controls()
+        self._update_refresh_controls()
 
     def _center_dialog(self, dialog: tk.Toplevel) -> None:
         dialog.update_idletasks()
@@ -248,14 +273,20 @@ class AutoChzzkApp:
         dialog.geometry(f"+{x}+{y}")
 
     def _build_settings_dialog(self) -> None:
-        dialog = self.settings_dialog = tk.Toplevel(self.root, bg=self.SURFACE)
-        dialog.withdraw()
-        dialog.title(f"{APP_NAME} · 설정")
-        dialog.transient(self.root)
-        dialog.resizable(False, False)
-        card = tk.Frame(dialog, bg=self.SURFACE, padx=24, pady=22)
-        card.pack(fill="both", expand=True)
-        tk.Label(card, text="설정", fg=self.TEXT, bg=self.SURFACE, font=("Malgun Gothic", 14, "bold")).pack(anchor="w", pady=(0, 22))
+        dialog = self.settings_dialog = tk.Frame(self.root, bg="#101116")
+        self.settings_previous_focus = None
+        panel = tk.Frame(dialog, bg=self.SURFACE, padx=22, pady=20, highlightthickness=1, highlightbackground="#3A3D47")
+        tk.Label(panel, text="설정", fg=self.TEXT, bg=self.SURFACE, font=("Malgun Gothic", 14, "bold")).pack(anchor="w", pady=(0, 16))
+        ttk.Button(panel, text="닫기", style="DialogAccent.TButton", command=self._close_settings_dialog, cursor="hand2").pack(side="bottom", anchor="e", pady=(16, 0))
+        body = tk.Frame(panel, bg=self.SURFACE)
+        body.pack(fill="both", expand=True)
+        canvas = tk.Canvas(body, bg=self.SURFACE, highlightthickness=0, height=1, yscrollincrement=20)
+        scrollbar = ttk.Scrollbar(body, orient="vertical", command=canvas.yview, style="Dark.Vertical.TScrollbar")
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+        card = tk.Frame(canvas, bg=self.SURFACE)
+        content_window = canvas.create_window((0, 0), window=card, anchor="nw")
+        canvas.configure(yscrollcommand=scrollbar.set)
 
         profile_section = tk.Frame(card, bg=self.SURFACE)
         profile_section.pack(fill="x")
@@ -270,7 +301,8 @@ class AutoChzzkApp:
 
         tk.Frame(card, bg="#3A3D47", height=1).pack(fill="x", pady=20)
         tk.Label(card, text="확장 프로그램", fg=self.TEXT, bg=self.SURFACE, font=("Malgun Gothic", 9, "bold")).pack(anchor="w")
-        tk.Label(card, textvariable=self.extension_status_value, fg=self.MUTED, bg=self.SURFACE, font=("Malgun Gothic", 8), wraplength=390, justify="left").pack(anchor="w", pady=(5, 12))
+        extension_label = tk.Label(card, textvariable=self.extension_status_value, fg=self.MUTED, bg=self.SURFACE, font=("Malgun Gothic", 8), wraplength=390, justify="left")
+        extension_label.pack(anchor="w", pady=(5, 12))
         extension_actions = tk.Frame(card, bg=self.SURFACE)
         extension_actions.pack(fill="x")
         for label, command in (("연결 재확인", self.recheck_extension_status), ("설치 안내", self.show_extension_install_guide), ("연결 코드", self.show_extension_pairing)):
@@ -285,9 +317,74 @@ class AutoChzzkApp:
         window_actions = tk.Frame(card, bg=self.SURFACE)
         window_actions.pack(fill="x")
         ttk.Button(window_actions, text="트레이로 숨기기", style="DialogDark.TButton", command=self._hide_from_settings, cursor="hand2").pack(side="left")
-        ttk.Button(card, text="닫기", style="DialogAccent.TButton", command=self._close_settings_dialog, cursor="hand2").pack(anchor="e", pady=(18, 0))
-        dialog.protocol("WM_DELETE_WINDOW", self._close_settings_dialog)
-        dialog.bind("<Escape>", lambda _event: self._close_settings_dialog())
+
+        def resize_panel(event) -> None:
+            panel.place(relx=0.5, rely=0.5, anchor="center", width=min(484, max(1, event.width - 48)), height=min(600, max(1, event.height - 48)))
+
+        def resize_content(event) -> None:
+            canvas.itemconfigure(content_window, width=event.width)
+            extension_label.configure(wraplength=max(1, event.width - 4))
+            self.version_label.configure(wraplength=max(1, event.width - 4))
+            update_scrollregion(event)
+
+        def update_scrollregion(_event) -> None:
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            if card.winfo_reqheight() > canvas.winfo_height():
+                scrollbar.pack(side="right", fill="y")
+            else:
+                scrollbar.pack_forget()
+                canvas.yview_moveto(0)
+
+        def settings_active(event) -> bool:
+            return dialog.winfo_ismapped() and event.widget.winfo_toplevel() is self.root and self.root.grab_current() is dialog
+
+        def close_on_escape(event):
+            if settings_active(event):
+                self._close_settings_dialog()
+                return "break"
+            return None
+
+        def cycle_focus(event):
+            if not settings_active(event):
+                return None
+            direction = "tk_focusPrev" if event.state & 1 else "tk_focusNext"
+            current = str(self.root.focus_get() or dialog)
+            first = current
+            while True:
+                current = str(self.root.tk.call(direction, current))
+                if current.startswith(str(dialog) + "."):
+                    focused = self.root.nametowidget(current)
+                    focused.focus_set()
+                    if current.startswith(str(card) + "."):
+                        top = focused.winfo_rooty() - card.winfo_rooty()
+                        bottom = top + focused.winfo_height()
+                        visible_top = canvas.canvasy(0)
+                        if top < visible_top:
+                            canvas.yview_moveto(max(0, top - 20) / max(1, card.winfo_height()))
+                        elif bottom > visible_top + canvas.winfo_height():
+                            canvas.yview_moveto((bottom - canvas.winfo_height() + 20) / max(1, card.winfo_height()))
+                    break
+                if current == first:
+                    dialog.focus_set()
+                    break
+            return "break"
+
+        def scroll_settings(event):
+            if not settings_active(event):
+                return None
+            delta = int(getattr(event, "delta", 0))
+            if delta:
+                units = max(1, abs(delta) // 120)
+                canvas.yview_scroll(-units if delta > 0 else units, "units")
+            return "break"
+
+        dialog.bind("<Configure>", resize_panel)
+        canvas.bind("<Configure>", resize_content)
+        card.bind("<Configure>", update_scrollregion)
+        self.root.bind("<Escape>", close_on_escape, add="+")
+        self.root.bind("<Tab>", cycle_focus, add="+")
+        self.root.bind("<Shift-Tab>", cycle_focus, add="+")
+        self.root.bind("<MouseWheel>", scroll_settings, add="+")
 
     def _refresh_profile_controls(self) -> None:
         self.profile_selector.configure(values=list(self.profile_labels))
@@ -302,17 +399,28 @@ class AutoChzzkApp:
         if self.active_dialog is not None and self.active_dialog.winfo_exists():
             self.active_dialog.lift()
             return
+        if self.changelog_dialog is not None and self.changelog_dialog.winfo_exists():
+            self.changelog_dialog.lift()
+            return
         self.profile_value.set(self.selected_chrome_profile["name"])
-        self.settings_dialog.deiconify()
-        self._center_dialog(self.settings_dialog)
+        if not self.settings_dialog.winfo_ismapped():
+            self.settings_previous_focus = self.root.focus_get()
+        self.settings_dialog.place(x=0, y=0, relwidth=1, relheight=1)
         self.settings_dialog.lift()
+        self.root.update_idletasks()
         self.settings_dialog.grab_set()
         self.settings_dialog.focus_set()
 
     def _close_settings_dialog(self) -> None:
-        self.settings_dialog.grab_release()
-        self.settings_dialog.withdraw()
-        self.root.focus_set()
+        if self.root.grab_current() is self.settings_dialog:
+            self.settings_dialog.grab_release()
+        self.settings_dialog.place_forget()
+        previous_focus = self.settings_previous_focus
+        self.settings_previous_focus = None
+        if previous_focus is not None and previous_focus.winfo_exists() and previous_focus.winfo_viewable():
+            previous_focus.focus_set()
+        else:
+            self.root.focus_set()
 
     def _hide_from_settings(self) -> None:
         self._close_settings_dialog()
@@ -359,6 +467,9 @@ class AutoChzzkApp:
 
     def _on_list_mousewheel(self, event) -> str | None:
         """Scroll the channel list when the pointer is over its visible area."""
+        settings_dialog = getattr(self, "settings_dialog", None)
+        if settings_dialog is not None and settings_dialog.winfo_ismapped():
+            return None
         if not self.canvas.winfo_ismapped():
             return None
         pointer_x, pointer_y = self.root.winfo_pointerxy()
@@ -1007,12 +1118,14 @@ class AutoChzzkApp:
         self.interval_editors = {}
         self.live_status_widgets = {}
         self.watching_indicators: dict[str, tk.Label] = {}
+        self.check_status_widgets = {}
         self._update_channel_count()
         if not self.channels: tk.Label(self.list_frame, text="아직 등록된 채널이 없습니다.", fg=self.MUTED, bg=self.SURFACE, font=("Malgun Gothic", 10), pady=28).pack()
         for channel in self.channels:
             self._make_channel_row(channel)
             if self.editing_channel_id == channel["id"]: self._make_interval_editor(channel)
         self._update_monitor_status()
+        self._update_refresh_controls()
 
     def _update_channel_count(self) -> None:
         enabled_count = sum(bool(channel.get("enabled")) for channel in self.channels)
@@ -1052,6 +1165,10 @@ class AutoChzzkApp:
         live_status = MarqueeText(details, live_text, fg=live_color, bg=self.SURFACE, font=("Malgun Gothic", 8), height=20)
         live_status.pack(fill="x", pady=(2, 0))
         self.live_status_widgets[channel["id"]] = live_status
+        check_text, check_color = self._check_status_display(channel["id"])
+        check_status = tk.Label(details, text=check_text, fg=check_color, bg=self.SURFACE, font=("Malgun Gothic", 8), anchor="w")
+        check_status.pack(fill="x", pady=(3, 0))
+        self.check_status_widgets[channel["id"]] = check_status
         tk.Frame(self.list_frame, bg=self.INPUT, height=1).pack(fill="x")
 
     def show_channel_menu(self, channel_id: str) -> None:
@@ -1068,6 +1185,7 @@ class AutoChzzkApp:
             self.root, interval=channel.get("interval", 60),
             edit_command=lambda: self.show_interval_editor(channel_id),
             delete_command=lambda: self.confirm_remove_channel(channel_id, channel.get("name") or channel_id),
+            refresh_command=lambda: self.refresh_channel(channel_id),
             bg=self.INPUT, text_color=self.TEXT, muted=self.MUTED, danger=self.DANGER,
         )
         menu.show(row)
@@ -1086,6 +1204,111 @@ class AutoChzzkApp:
             return
         live_text, live_color = self._live_status_display(channel_id)
         live_status.set_text(live_text, fg=live_color)
+
+    def _check_status_display(self, channel_id: str) -> tuple[str, str]:
+        last_success = getattr(self, "last_successful_check", {}).get(channel_id)
+        if last_success is None:
+            freshness = "아직 정상 확인하지 못했습니다"
+        else:
+            age = max(0, int(time.monotonic() - last_success))
+            elapsed = "방금 전" if age < 10 else f"{age}초 전" if age < 60 else f"{age // 60}분 전" if age < 3600 else f"{age // 3600}시간 전"
+            freshness = f"마지막 정상 확인 {elapsed}"
+        if channel_id in getattr(self, "check_errors", set()):
+            return f"확인 실패 · {freshness}", self.DANGER
+        pending = getattr(getattr(self, "lookup_pool", None), "pending", {})
+        if channel_id in getattr(self, "manual_checks", set()) or ("live", channel_id) in pending:
+            return f"확인 중… · {freshness}", self.MUTED
+        return ("확인 대기" if last_success is None else freshness), self.MUTED
+
+    def _update_check_status_widget(self, channel_id: str) -> None:
+        widget = getattr(self, "check_status_widgets", {}).get(channel_id)
+        if widget is not None and widget.winfo_exists():
+            text, color = self._check_status_display(channel_id)
+            if widget.cget("text") != text or widget.cget("fg") != color:
+                widget.configure(text=text, fg=color)
+
+    def _refresh_check_indicators(self) -> None:
+        if self.stop_event.is_set():
+            return
+        for channel_id in self.check_status_widgets:
+            self._update_check_status_widget(channel_id)
+        self._update_pause_controls()
+        self.root.after(1_000, self._refresh_check_indicators)
+
+    def _is_monitor_paused(self) -> bool:
+        return time.monotonic() < getattr(self, "pause_until", 0)
+
+    def pause_monitoring(self, minutes: int) -> None:
+        if self.stop_event.is_set():
+            return
+        self.pause_until = time.monotonic() + minutes * 60
+        canceled_closes = CHROME_TABS.cancel_tab_commands()
+        for channel in self.channels:
+            if LIVE_URL.format(channel_id=channel["id"]) in canceled_closes:
+                self.was_live[channel["id"]] = True
+        self._update_pause_controls()
+        self._set_status(f"전체 감지를 {minutes}분 동안 쉽니다. 수동 갱신은 계속 사용할 수 있습니다.")
+
+    def resume_monitoring(self) -> None:
+        if self.stop_event.is_set():
+            return
+        self.pause_until = 0
+        self.force_open_checks.update(channel["id"] for channel in self.channels if channel.get("enabled"))
+        self._update_pause_controls()
+        self._set_status("전체 감지를 다시 시작합니다. 감지 ON 채널의 방송 상태를 확인합니다.")
+
+    def _update_pause_controls(self) -> None:
+        if not hasattr(self, "pause_value"):
+            return
+        paused = self._is_monitor_paused()
+        if paused:
+            remaining = max(0, ceil(self.pause_until - time.monotonic()))
+            self.pause_value.set(f"감지 쉬는 중 · {remaining // 60}분 {remaining % 60:02d}초 남음")
+            if not self.pause_label.winfo_manager():
+                self.pause_label.pack(fill="x", pady=(0, 12), after=self.monitor_controls)
+            if not self.resume_button.winfo_manager():
+                self.resume_button.pack(side="left", padx=(8, 0))
+        else:
+            self.pause_value.set("")
+            self.pause_label.pack_forget()
+            self.resume_button.pack_forget()
+
+    def refresh_channel(self, channel_id: str) -> None:
+        if self.stop_event.is_set() or not any(channel["id"] == channel_id for channel in self.channels):
+            return
+        self.manual_checks.add(channel_id)
+        self._update_check_status_widget(channel_id)
+
+    def refresh_all_channels(self) -> None:
+        if self.stop_event.is_set() or self.refresh_batch or not self.channels:
+            return
+        self.refresh_batch = {channel["id"] for channel in self.channels}
+        self.refresh_total = len(self.refresh_batch)
+        self.refresh_failed.clear()
+        self.manual_checks.update(self.refresh_batch)
+        self._update_refresh_controls()
+        for channel_id in self.refresh_batch:
+            self._update_check_status_widget(channel_id)
+        self._set_status(f"등록된 채널 {self.refresh_total}개의 방송 상태를 갱신합니다.")
+
+    def _update_refresh_controls(self) -> None:
+        if not hasattr(self, "refresh_all_button"):
+            return
+        batch = getattr(self, "refresh_batch", set())
+        total = getattr(self, "refresh_total", len(batch))
+        text = f"갱신 중 {total - len(batch)}/{total}" if batch else "전체 갱신"
+        self.refresh_all_button.configure(text=text, state="disabled" if batch or not self.channels else "normal")
+
+    def _finish_refresh_channel(self, channel_id: str, failed: bool = False) -> None:
+        if channel_id not in self.refresh_batch:
+            return
+        self.refresh_batch.discard(channel_id)
+        if failed:
+            self.refresh_failed.add(channel_id)
+        self._update_refresh_controls()
+        if not self.refresh_batch:
+            failed_count = len(self.refresh_failed)
+            self._set_status(f"전체 갱신 완료 · {self.refresh_total - failed_count}개 정상 확인 · {failed_count}개 확인 실패", bool(failed_count))
 
     def _make_interval_editor(self, channel: dict) -> None:
         editor = tk.Frame(self.list_frame, bg="#373B45", padx=13, pady=10)
@@ -1183,13 +1406,18 @@ class AutoChzzkApp:
         """Schedule independent lookups; apply every result on the UI thread."""
         if self.stop_event.is_set():
             return
-        self.lookup_pool.drain()
         now = time.monotonic()
-        for channel in self.channels:
+        if self.pause_until and now >= self.pause_until:
+            self.resume_monitoring()
+        self.lookup_pool.drain()
+        paused = self._is_monitor_paused()
+        # Explicit refreshes get capacity before routine polling.
+        for channel in sorted(self.channels, key=lambda item: item["id"] not in self.manual_checks):
             channel_id = channel["id"]
             forced = channel_id in self.force_open_checks
             initial = channel_id in self.initial_checks
-            if not initial and not forced and (not channel.get("enabled") or now - self.last_checked.get(channel_id, float("-inf")) < channel.get("interval", 60)):
+            manual = channel_id in self.manual_checks
+            if not manual and (paused or (not initial and not forced and (not channel.get("enabled") or now - self.last_checked.get(channel_id, float("-inf")) < channel.get("interval", 60)))):
                 continue
             generation = self.channel_generations.get(channel_id, 0)
             def complete(value, error, channel_id=channel_id, generation=generation, forced=forced):
@@ -1199,25 +1427,38 @@ class AutoChzzkApp:
                 if current is None:
                     return
                 self.last_checked[channel_id] = time.monotonic()
+                self.manual_checks.discard(channel_id)
                 if error:
+                    self.check_errors.add(channel_id)
                     if forced:
                         self.retry_open_checks.add(channel_id)
-                    self._set_status("방송 상태 확인 실패 · 이전 상태를 유지하고 다음 주기에 재시도합니다.", True)
+                    self._update_check_status_widget(channel_id)
+                    retry_hint = "다음 주기에 재시도합니다." if current.get("enabled") and not self._is_monitor_paused() else "수동 갱신으로 다시 확인할 수 있습니다."
+                    self._set_status(f"방송 상태 확인 실패 · 이전 상태를 유지합니다. {retry_hint}", True)
+                    self._finish_refresh_channel(channel_id, failed=True)
                     return
                 is_live, title = value
+                self.check_errors.discard(channel_id)
+                self.last_successful_check[channel_id] = time.monotonic()
+                self._record_live_status(channel_id, is_live, title)
+                self._update_check_status_widget(channel_id)
+                self._finish_refresh_channel(channel_id)
+                if not current.get("enabled") or self._is_monitor_paused():
+                    return
                 reopen = forced or channel_id in self.retry_open_checks
                 self.retry_open_checks.discard(channel_id)
                 was_live = self.was_live.get(channel_id, False)
                 self.was_live[channel_id] = is_live
-                self._record_live_status(channel_id, is_live, title)
-                if current.get("enabled"):
-                    if is_live and (reopen or not was_live):
-                        self._open_live(current, title)
-                    elif not is_live and was_live:
-                        self._close_finished_live(current)
+                if is_live and (reopen or not was_live):
+                    self._open_live(current, title)
+                elif not is_live and was_live:
+                    self._close_finished_live(current)
             if self.lookup_pool.submit(("live", channel_id), lambda channel_id=channel_id: get_live_status(channel_id), complete):
-                self.initial_checks.discard(channel_id)
-                self.force_open_checks.discard(channel_id)
+                # Keep manual intent until a valid result, including across toggles.
+                if not paused:
+                    self.initial_checks.discard(channel_id)
+                    self.force_open_checks.discard(channel_id)
+                self._update_check_status_widget(channel_id)
         self.root.after(100, self._monitor)
 
     def _invalidate_channel(self, channel_id):
@@ -1226,6 +1467,16 @@ class AutoChzzkApp:
         self.last_checked.pop(channel_id, None)
         self.force_open_checks.discard(channel_id)
         self.retry_open_checks.discard(channel_id)
+        if not any(channel["id"] == channel_id for channel in self.channels):
+            self.manual_checks.discard(channel_id)
+            self.last_successful_check.pop(channel_id, None)
+            self.check_errors.discard(channel_id)
+            if channel_id in self.refresh_batch:
+                self.refresh_total -= 1
+            self._finish_refresh_channel(channel_id)
+        elif channel_id in self.refresh_batch:
+            # A toggle invalidates an in-flight answer; keep the batch queued.
+            self.manual_checks.add(channel_id)
 
     def _record_live_status(self, channel_id: str, is_live: bool, title: str) -> None:
         live_state = (is_live, title)
@@ -1236,13 +1487,15 @@ class AutoChzzkApp:
 
     def _close_finished_live(self, channel: dict) -> None:
         """Close only tabs that the extension previously opened for this broadcast."""
-        if not CHROME_TABS.is_connected():
+        if self._is_monitor_paused() or not CHROME_TABS.is_connected():
             return
         command_id = CHROME_TABS.queue_background_close(LIVE_URL.format(channel_id=channel["id"]))
         if command_id:
             self._set_status(f"방송 종료 감지: {channel.get('name', channel['id'])} 자동 접속 탭을 닫는 중")
 
     def _open_live(self, channel: dict, title: str) -> None:
+        if self._is_monitor_paused():
+            return
         if not any(item["id"] == channel["id"] and item.get("enabled") for item in self.channels): return
         if self.stop_event.is_set() or not self.live_info.get(channel["id"], (False, ""))[0]:
             return

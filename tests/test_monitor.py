@@ -53,6 +53,12 @@ class AppMonitorTests(unittest.TestCase):
         self.callbacks = []
         self.app.lookup_pool.submit.side_effect = lambda key, work, callback: self.callbacks.append(callback) or True
         self.app.last_checked = {}
+        self.app.last_successful_check = {}
+        self.app.check_errors = set()
+        self.app.manual_checks = set()
+        self.app.refresh_batch = set()
+        self.app.refresh_failed = set()
+        self.app.pause_until = 0
         self.app.initial_checks = {"a"}
         self.app.force_open_checks = set()
         self.app.retry_open_checks = set()

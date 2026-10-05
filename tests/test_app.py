@@ -291,6 +291,12 @@ class ChannelToggleUITests(unittest.TestCase):
         app.live_info = {self.channel_id: (True, 'Synthetic live title')}
         app.was_live = {self.channel_id: True}
         app.last_checked = {self.channel_id: 1}
+        app.last_successful_check = {}
+        app.check_errors = set()
+        app.manual_checks = set()
+        app.refresh_batch = set()
+        app.refresh_failed = set()
+        app.pause_until = 0
         app.force_open_checks = {self.channel_id}
         app.retry_open_checks = {self.channel_id}
         app.channel_generations = {}

@@ -217,7 +217,7 @@ class ChannelOptionsMenu(tk.Toplevel):
     def __init__(
         self, parent, *, interval: int, edit_command: Callable[[], None],
         delete_command: Callable[[], None], bg: str, text_color: str,
-        muted: str, danger: str,
+        muted: str, danger: str, refresh_command: Callable[[], None] | None = None,
     ) -> None:
         super().__init__(parent, bg='#414550', bd=0, highlightthickness=0)
         self.withdraw()
@@ -229,7 +229,7 @@ class ChannelOptionsMenu(tk.Toplevel):
         self._previous_grab = None
         self._previous_grab_status = None
         self._focus_after_id = None
-        self._commands = (edit_command, delete_command)
+        self._commands = ((refresh_command,) if refresh_command is not None else ()) + (edit_command, delete_command)
         self._buttons = []
         self._active_index = 0
         self._bg = bg
@@ -248,9 +248,10 @@ class ChannelOptionsMenu(tk.Toplevel):
             font=('Malgun Gothic', 9),
         ).pack(side='right')
         tk.Frame(body, bg='#414550', height=1).pack(fill='x', padx=8, pady=(0, 6))
-        for index, (label, color) in enumerate((
+        entries = ([('지금 확인', text_color)] if refresh_command is not None else []) + [
             ('확인 간격 수정', text_color), ('채널 삭제', danger),
-        )):
+        ]
+        for index, (label, color) in enumerate(entries):
             button = tk.Button(
                 body, text=label, command=lambda value=index: self._invoke(value),
                 bg=bg, fg=color, activebackground=self._hover_bg, activeforeground=color,
