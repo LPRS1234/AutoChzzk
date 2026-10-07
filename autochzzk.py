@@ -1321,6 +1321,8 @@ class AutoChzzkApp:
         self.refresh_total = len(self.refresh_batch)
         self.refresh_failed.clear()
         self.manual_checks.update(self.refresh_batch)
+        if not self._is_monitor_paused():
+            self.retry_open_checks.update(channel["id"] for channel in self.channels if channel.get("enabled"))
         self._update_refresh_controls()
         for channel_id in self.refresh_batch:
             self._update_check_status_widget(channel_id)

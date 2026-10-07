@@ -24,6 +24,7 @@ class MonitorControlsUITests(unittest.TestCase):
         app.check_errors = set()
         app.lookup_pool = Mock(pending={})
         app.force_open_checks = set()
+        app.retry_open_checks = set()
         app.live_info = {}
         app.editing_channel_id = None
         app.active_dialog = app.changelog_dialog = None

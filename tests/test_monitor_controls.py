@@ -334,6 +334,121 @@ class MonitorControlTests(unittest.TestCase):
         self.assertIn('0개 정상 확인', self.app._set_status.call_args.args[0])
         self.assertFalse(self.app.last_successful_check)
 
+    def _use_real_tab_commands(self, watched=()):
+        self.app.channels = [
+            dict(id='a' * 32, name='Synthetic A', enabled=True, interval=60),
+            dict(id='b' * 32, name='Synthetic B', enabled=False, interval=60),
+            dict(id='c' * 32, name='Synthetic C', enabled=True, interval=60),
+        ]
+        self.app.lookup_pool.capacity = 3
+        self.app.last_checked = {channel['id']: 1000 for channel in self.app.channels}
+        self.app.was_live = {channel['id']: True for channel in self.app.channels}
+        self.app.live_info = {channel['id']: (True, 'Previous broadcast') for channel in self.app.channels}
+        self.app._open_live = AutoChzzkApp._open_live.__get__(self.app)
+        self.app._close_finished_live = AutoChzzkApp._close_finished_live.__get__(self.app)
+        tabs = ChromeTabState()
+        tabs.set_selected_profile({'gaia:synthetic'})
+        tabs.update('synthetic-client', set(watched), {'gaia:synthetic'}, True, '2.1.3')
+        return tabs
+
+    def test_whole_refresh_reopens_missing_enabled_tabs_without_reopening_on_later_polls(self):
+        tabs = self._use_real_tab_commands(watched={'c' * 32})
+        with patch('autochzzk.CHROME_TABS', tabs), patch('autochzzk.get_live_status', return_value=(True, 'Synthetic live')):
+            self.app.refresh_channel('a' * 32)
+            self.app._monitor()
+            self.complete_results()
+            self.assertEqual(tabs.pending_commands('synthetic-client'), [])
+
+            self.app.refresh_all_channels()
+            self.app.refresh_all_channels()
+            self.app._monitor()
+            self.complete_results(3)
+            commands = tabs.pending_commands('synthetic-client')
+            self.assertEqual([(command['action'], command['url']) for command in commands], [
+                ('open', 'https://chzzk.naver.com/live/' + 'a' * 32),
+            ])
+            self.assertEqual(self.app.live_info['b' * 32], (True, 'Synthetic live'))
+
+            tabs.acknowledge_commands('synthetic-client', [commands[0]['id']])
+            self.clock.return_value = 1060
+            tabs.update('synthetic-client', {'c' * 32}, {'gaia:synthetic'}, True, '2.1.3')
+            self.app._monitor()
+            self.complete_results(2)
+            self.assertEqual(tabs.pending_commands('synthetic-client'), [])
+
+    def test_whole_refresh_reuses_an_inflight_lookup_to_reopen(self):
+        tabs = self._use_real_tab_commands()
+        self.app.channels = self.app.channels[:1]
+        self.app.last_checked.clear()
+        entered, release = threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+
+        def lookup(channel_id):
+            entered.set()
+            release.wait(2)
+            return True, 'Synthetic live'
+
+        with patch('autochzzk.CHROME_TABS', tabs), patch('autochzzk.get_live_status', side_effect=lookup) as live_lookup:
+            self.app._monitor()
+            self.assertTrue(entered.wait(1))
+            self.app.refresh_all_channels()
+            self.app._monitor()
+            release.set()
+            self.complete_results()
+            self.app._monitor()
+            commands = tabs.pending_commands('synthetic-client')
+            self.assertEqual([(command['action'], command['url']) for command in commands], [
+                ('open', 'https://chzzk.naver.com/live/' + 'a' * 32),
+            ])
+            self.assertEqual(live_lookup.call_count, 1)
+            self.assertFalse(self.app.lookup_pool.pending)
+            self.assertFalse(self.app.refresh_batch)
+
+    def test_whole_refresh_failure_preserves_live_state_until_reopen_can_be_retried(self):
+        tabs = self._use_real_tab_commands()
+        self.app.channels = self.app.channels[:1]
+        with patch('autochzzk.CHROME_TABS', tabs):
+            with patch('autochzzk.get_live_status', side_effect=OSError('Synthetic API failure')):
+                self.app.refresh_all_channels()
+                self.app._monitor()
+                self.complete_results()
+            self.assertTrue(self.app.was_live['a' * 32])
+            self.assertEqual(self.app.live_info['a' * 32], (True, 'Previous broadcast'))
+            self.assertEqual(tabs.pending_commands('synthetic-client'), [])
+
+            self.clock.return_value = 1060
+            tabs.update('synthetic-client', set(), {'gaia:synthetic'}, True, '2.1.3')
+            with patch('autochzzk.get_live_status', return_value=(True, 'Synthetic live')):
+                self.app._monitor()
+                self.complete_results()
+            commands = tabs.pending_commands('synthetic-client')
+            self.assertEqual([(command['action'], command['url']) for command in commands], [
+                ('open', 'https://chzzk.naver.com/live/' + 'a' * 32),
+            ])
+
+    def test_whole_refresh_still_closes_a_finished_broadcast(self):
+        tabs = self._use_real_tab_commands(watched={'a' * 32})
+        self.app.channels = self.app.channels[:1]
+        with patch('autochzzk.CHROME_TABS', tabs), patch('autochzzk.get_live_status', return_value=(False, '')):
+            self.app.refresh_all_channels()
+            self.app._monitor()
+            self.complete_results()
+        commands = tabs.pending_commands('synthetic-client')
+        self.assertEqual([(command['action'], command['url']) for command in commands], [
+            ('close', 'https://chzzk.naver.com/live/' + 'a' * 32),
+        ])
+
+    def test_whole_refresh_while_paused_only_updates_broadcast_status(self):
+        tabs = self._use_real_tab_commands()
+        self.app.pause_until = 2800
+        with patch('autochzzk.CHROME_TABS', tabs), patch('autochzzk.get_live_status', return_value=(True, 'Synthetic live')):
+            self.app.refresh_all_channels()
+            self.app._monitor()
+            self.complete_results(3)
+        self.assertEqual(self.app.live_info['a' * 32], (True, 'Synthetic live'))
+        self.assertEqual(self.app.live_info['b' * 32], (True, 'Synthetic live'))
+        self.assertEqual(tabs.pending_commands('synthetic-client'), [])
+
 
 if __name__ == "__main__":
     unittest.main()
