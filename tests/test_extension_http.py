@@ -86,6 +86,25 @@ class BridgeHTTPTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(json.loads(data)["acknowledgedCommandIds"], ["b" * 32])
 
+    def test_log_power_round_trip_and_old_extension_compatibility(self):
+        extension.CHROME_TABS.set_selected_profile({'email:test@example.invalid'})
+        extension.CHROME_TABS.set_log_power_channels({'a' * 32, 'b' * 32})
+        report = {**self.report(), 'logPowers': {'a' * 32: 12345, 'b' * 32: 0, 'c' * 32: None}}
+        status, _, data, _ = self.request(report)
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(data)['logPowerChannelIds'], ['a' * 32, 'b' * 32])
+        self.assertEqual(extension.CHROME_TABS.get_log_power('a' * 32), 12345)
+        self.assertEqual(extension.CHROME_TABS.get_log_power('b' * 32), 0)
+        self.assertEqual(self.request(self.report())[0], 200)
+        self.assertIsNone(extension.CHROME_TABS.get_log_power('a' * 32))
+
+    def test_invalid_log_power_reports_are_rejected(self):
+        for values in ([], {'bad': 1}, {'a' * 32: True}, {'a' * 32: -1},
+                       {'a' * 32: 1.5}, {'a' * 32: '123'}, {'a' * 32: 2**53},
+                       {f'{i:032x}': 1 for i in range(257)}):
+            self.assertEqual(self.request({**self.report(), 'logPowers': values})[0], 400)
+        self.assertEqual(extension.CHROME_TABS.clients, {})
+
     def test_reload_command_is_delivered_only_to_the_selected_client(self):
         extension.CHROME_TABS.set_selected_profile({"email:test@example.invalid"})
         self.assertEqual(self.request(self.report())[0], 200)

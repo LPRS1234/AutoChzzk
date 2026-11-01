@@ -23,6 +23,8 @@ class ChromeTabState:
 
     def __init__(self) -> None:
         self.clients: dict[str, tuple[set[str], set[str], float, str]] = {}
+        self.log_powers: dict[str, dict[str, int | None]] = {}
+        self.log_power_channels: set[str] = set()
         self.selected_profile_keys: set[str] = set()
         self.last_focused_client_id: str | None = None
         self.pending_opens: dict[str, tuple[str, str, float]] = {}
@@ -58,14 +60,33 @@ class ChromeTabState:
         profile_keys: set[str],
         focused: bool,
         extension_version: str = "",
+        log_powers: dict[str, int | None] | None = None,
     ) -> None:
         with self.lock:
             self.clients = self._fresh_clients()
+            self.log_powers = {key: values for key, values in self.log_powers.items() if key in self.clients}
             if client_id not in self.clients and len(self.clients) >= 256:
                 return
             self.clients[client_id] = (channel_ids, profile_keys, time.monotonic(), extension_version)
+            self.log_powers[client_id] = dict(log_powers or {})
             if focused:
                 self.last_focused_client_id = client_id
+
+    def set_log_power_channels(self, channel_ids: set[str]) -> None:
+        with self.lock:
+            self.log_power_channels = set(sorted(channel_ids)[:256])
+
+    def requested_log_power_channels(self, client_id: str) -> list[str]:
+        with self.lock:
+            return sorted(self.log_power_channels) if client_id in self._selected_clients() else []
+
+    def get_log_power(self, channel_id: str) -> int | None:
+        with self.lock:
+            clients = self._selected_clients()
+            if not clients:
+                return None
+            client_id = max(clients, key=lambda key: clients[key][2])
+            return self.log_powers.get(client_id, {}).get(channel_id)
 
     def is_watched(self, channel_id: str) -> bool:
         with self.lock:
@@ -457,12 +478,19 @@ class ExtensionRequestHandler(BaseHTTPRequestHandler):
             channel_ids = payload.get("channelIds")
             completed = payload.get("completedCommandIds")
             focused = payload.get("focused")
+            log_powers = payload.get("logPowers", {})
             if (not isinstance(client_id, str) or not 8 <= len(client_id) <= 128
                     or not isinstance(focused, bool)
                     or not isinstance(channel_ids, list) or len(channel_ids) > 256
                     or any(not isinstance(value, str) or not CHANNEL_ID_PATTERN.fullmatch(value) for value in channel_ids)
                     or not isinstance(completed, list) or len(completed) > 128
                     or any(not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{32}", value) for value in completed)):
+                self._reply(400)
+                return
+            if (not isinstance(log_powers, dict) or len(log_powers) > 256
+                    or any(not CHANNEL_ID_PATTERN.fullmatch(channel_id)
+                           or (amount is not None and (type(amount) is not int or not 0 <= amount <= 2**53 - 1))
+                           for channel_id, amount in log_powers.items())):
                 self._reply(400)
                 return
             for field, limit in (("profileGaiaId", 128), ("profileEmail", 320), ("extensionVersion", 32)):
@@ -474,9 +502,12 @@ class ExtensionRequestHandler(BaseHTTPRequestHandler):
                 profile_keys.add("gaia:" + payload["profileGaiaId"])
             if payload["profileEmail"]:
                 profile_keys.add("email:" + payload["profileEmail"].lower())
-            CHROME_TABS.update(client_id, {value.lower() for value in channel_ids}, profile_keys, focused, payload["extensionVersion"])
+            CHROME_TABS.update(client_id, {value.lower() for value in channel_ids}, profile_keys, focused,
+                               payload["extensionVersion"], {key.lower(): value for key, value in log_powers.items()})
             CHROME_TABS.acknowledge_commands(client_id, completed)
-            self._reply(payload={"ok": True, "openCommands": CHROME_TABS.pending_commands(client_id), "acknowledgedCommandIds": completed})
+            self._reply(payload={"ok": True, "openCommands": CHROME_TABS.pending_commands(client_id),
+                                 "acknowledgedCommandIds": completed,
+                                 "logPowerChannelIds": CHROME_TABS.requested_log_power_channels(client_id)})
         except (ValueError, UnicodeDecodeError):
             self._reply(400)
         except (OSError, socket.timeout):

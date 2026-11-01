@@ -96,6 +96,7 @@ class AutoChzzkApp:
         self.interval_editors: dict[str, tk.Frame] = {}
         self.live_status_widgets: dict[str, MarqueeText] = {}
         self.watching_indicators: dict[str, tk.Label] = {}
+        self.log_power_labels: dict[str, tk.Label] = {}
         self.editing_channel_id: str | None = None
         self.last_checked = {}
         self.last_successful_check: dict[str, float] = {}
@@ -1153,6 +1154,8 @@ class AutoChzzkApp:
         self.interval_editors = {}
         self.live_status_widgets = {}
         self.watching_indicators: dict[str, tk.Label] = {}
+        self.log_power_labels = {}
+        CHROME_TABS.set_log_power_channels({channel["id"] for channel in self.channels})
         self.check_status_widgets = {}
         self._update_channel_count()
         if not self.channels: tk.Label(self.list_frame, text="아직 등록된 채널이 없습니다.", fg=self.MUTED, bg=self.SURFACE, font=("Malgun Gothic", 10), pady=28).pack()
@@ -1177,6 +1180,11 @@ class AutoChzzkApp:
                     text="● 시청 중" if CHROME_TABS.is_watched(channel_id) else "",
                     fg=self.DANGER,
                 )
+        for channel_id, label in getattr(self, "log_power_labels", {}).items():
+            if label.winfo_exists():
+                amount = CHROME_TABS.get_log_power(channel_id)
+                label.configure(text=f"통나무 {amount:,}" if amount is not None else "통나무 —",
+                                fg=self.ACCENT if amount is not None else self.MUTED)
 
     def _make_channel_row(self, channel: dict) -> None:
         row = tk.Frame(self.list_frame, bg=self.SURFACE, padx=16, pady=15)
@@ -1195,6 +1203,9 @@ class AutoChzzkApp:
         watching_indicator = tk.Label(name_row, bg=self.SURFACE, font=("Malgun Gothic", 8))
         watching_indicator.pack(side="right", padx=(7, 0))
         self.watching_indicators[channel["id"]] = watching_indicator
+        log_power = tk.Label(name_row, text="통나무 —", fg=self.MUTED, bg=self.SURFACE, font=("Malgun Gothic", 8))
+        log_power.pack(side="right", padx=(7, 0))
+        self.log_power_labels[channel["id"]] = log_power
         MarqueeText(name_row, channel.get("name") or channel["id"], fg=self.TEXT, bg=self.SURFACE, font=("Malgun Gothic", 10, "bold")).pack(side="left", fill="x", expand=True)
         live_text, live_color = self._live_status_display(channel["id"])
         live_status = MarqueeText(details, live_text, fg=live_color, bg=self.SURFACE, font=("Malgun Gothic", 8), height=20)

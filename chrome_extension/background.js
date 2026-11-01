@@ -126,6 +126,60 @@ async function authenticatedPost(path, payload, key) {
   }
 }
 let reporting = false;
+const logPowerCache = new Map();
+let logPowerChannels = new Set();
+let refreshingLogPowers = false;
+
+function reportedLogPowers() {
+  return Object.fromEntries([...logPowerCache]
+    .filter(([, value]) => Date.now() - value.checkedAt < 90000)
+    .map(([channelId, value]) => [channelId, value.amount]));
+}
+
+async function refreshLogPowers(channelIds) {
+  logPowerChannels = new Set((Array.isArray(channelIds) ? channelIds : [])
+    .filter((id) => typeof id === "string" && /^[0-9a-f]{32}$/i.test(id))
+    .map((id) => id.toLowerCase()).slice(0, 256));
+  for (const id of logPowerCache.keys()) {
+    if (!logPowerChannels.has(id)) logPowerCache.delete(id);
+  }
+  if (refreshingLogPowers) return;
+  refreshingLogPowers = true;
+  try {
+    const pending = [...logPowerChannels].filter((id) =>
+      !logPowerCache.has(id) || Date.now() - logPowerCache.get(id).checkedAt >= 60000);
+    // Keep balance queries separate from tab control; slow CHZZK requests must
+    // never hold up the authenticated two-second bridge heartbeat.
+    await Promise.all(Array.from({ length: Math.min(4, pending.length) }, async () => {
+      while (pending.length) {
+        const channelId = pending.shift();
+        if (!logPowerChannels.has(channelId)) continue;
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 4000);
+        let amount = null;
+        try {
+          const response = await fetch(`https://api.chzzk.naver.com/service/v1/channels/${channelId}/log-power`, {
+            method: "GET", credentials: "include", cache: "no-store", redirect: "error",
+            signal: controller.signal,
+          });
+          if (response.ok) {
+            const payload = await response.json();
+            if (payload?.code === 200 && Number.isSafeInteger(payload.content?.amount) && payload.content.amount >= 0) {
+              amount = payload.content.amount;
+            }
+          }
+        } catch {
+          // Logout, disabled log power, and network errors are unknown, not zero.
+        } finally {
+          clearTimeout(timer);
+        }
+        if (logPowerChannels.has(channelId)) logPowerCache.set(channelId, { amount, checkedAt: Date.now() });
+      }
+    }));
+  } finally {
+    refreshingLogPowers = false;
+  }
+}
 
 async function requestAutoplay(tabId) {
   try {
@@ -303,13 +357,15 @@ async function reportOpenChzzkLives() {
     const extensionVersion = chrome.runtime.getManifest().version;
     const sentIds = [...completedCommandIds].slice(0, 128);
     const response = await authenticatedPost("/chzzk-tabs", { clientId, focused, ...profileIdentity, extensionVersion,
-      channelIds: [...new Set(channelIds)].slice(0, 256), completedCommandIds: sentIds }, key);
+      channelIds: [...new Set(channelIds)].slice(0, 256), completedCommandIds: sentIds,
+      logPowers: reportedLogPowers() }, key);
     if (response?.ok !== true || !Array.isArray(response.acknowledgedCommandIds)) return;
     for (const id of response.acknowledgedCommandIds) {
       if (sentIds.includes(id)) completedCommandIds.delete(id);
     }
     await saveCommandState();
     await executeOpenCommands(response.openCommands);
+    refreshLogPowers(response.logPowerChannelIds).catch(() => {});
 
   } catch {
     // AutoChzzk is not running yet. The next poll will reconnect automatically.

@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from autochzzk import AutoChzzkApp
+from autochzzk_core.extension import ChromeTabState
 
 
 class MonitorControlsUITests(unittest.TestCase):
@@ -80,6 +81,21 @@ class MonitorControlsUITests(unittest.TestCase):
             self.assertGreaterEqual(button.winfo_rootx(), self.root.winfo_rootx())
             self.assertLessEqual(button.winfo_rootx() + button.winfo_width(),
                                  self.root.winfo_rootx() + self.root.winfo_width())
+
+    def test_log_power_updates_in_place_and_distinguishes_zero_from_unknown(self):
+        tabs = ChromeTabState()
+        tabs.set_selected_profile({'gaia:synthetic'})
+        tabs.update('synthetic-client', set(), {'gaia:synthetic'}, True,
+                    log_powers={'a' * 32: 12345, 'b' * 32: 0})
+        rows = dict(self.app.channel_rows)
+        with patch('autochzzk.CHROME_TABS', tabs):
+            self.app._refresh_watching_indicators()
+            self.assertEqual(self.app.log_power_labels['a' * 32].cget('text'), '통나무 12,345')
+            self.assertEqual(self.app.log_power_labels['b' * 32].cget('text'), '통나무 0')
+            tabs.set_selected_profile({'gaia:other'})
+            self.app._refresh_watching_indicators()
+            self.assertEqual(self.app.log_power_labels['a' * 32].cget('text'), '통나무 —')
+        self.assertEqual(self.app.channel_rows, rows)
 
 
 if __name__ == '__main__':

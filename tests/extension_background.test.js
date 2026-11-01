@@ -95,6 +95,105 @@ test("mutual HMAC authenticates challenge before reporting profile state", async
   assert.equal(JSON.parse(worker.calls.requests[1].options.body).profileGaiaId, "synthetic-id");
 });
 
+test("log power reads logged-in balances, caches for a minute, and reports only amounts", async () => {
+  const channelId = 'a'.repeat(32);
+  let amount = 12345;
+  let apiCalls = 0;
+  const worker = makeWorker({ fetchImpl: async (endpoint, options) => {
+    if (String(endpoint).startsWith('https://api.chzzk.naver.com/')) {
+      apiCalls++;
+      assert.equal(String(endpoint), `https://api.chzzk.naver.com/service/v1/channels/${channelId}/log-power`);
+      assert.equal(options.credentials, 'include');
+      assert.equal(options.cache, 'no-store');
+      assert.equal(options.method, 'GET');
+      return new Response(JSON.stringify({ code: 200, content: { amount } }));
+    }
+    const path = new URL(endpoint).pathname;
+    return signedResponse(endpoint, options, path === '/challenge' ? { ok: true, protocol: 2 }
+      : { ok: true, acknowledgedCommandIds: [], openCommands: [], logPowerChannelIds: [channelId] });
+  } });
+  worker.context.channels = [channelId];
+  await worker.run('refreshLogPowers(channels)');
+  await worker.run('reportOpenChzzkLives()');
+  assert.equal(JSON.parse(worker.calls.requests.at(-1).options.body).logPowers[channelId], 12345);
+  assert.equal(apiCalls, 1);
+  amount = 0;
+  worker.advance(61000);
+  await worker.run('refreshLogPowers(channels)');
+  assert.equal(worker.run('reportedLogPowers()')[channelId], 0);
+  assert.equal(apiCalls, 2);
+  worker.advance(91000);
+  assert.equal(worker.run('reportedLogPowers()')[channelId], undefined);
+});
+
+test("log power failures and malformed balances never become zero or retain a previous balance", async () => {
+  let payload = { code: 200, content: { amount: 100 } };
+  const worker = makeWorker({ fetchImpl: async () => {
+    if (payload === null) throw new Error('offline');
+    return new Response(JSON.stringify(payload));
+  } });
+  const channelId = 'b'.repeat(32);
+  worker.context.channels = [channelId];
+  for (const invalid of [null, { code: 401, content: null }, { code: 200, content: {} },
+    { code: 200, content: { amount: '100' } }, { code: 200, content: { amount: -1 } },
+    { code: 200, content: { amount: 2**53 } }]) {
+    payload = { code: 200, content: { amount: 100 } };
+    worker.advance(61000);
+    await worker.run('refreshLogPowers(channels)');
+    assert.equal(worker.run('reportedLogPowers()')[channelId], 100);
+    payload = invalid;
+    worker.advance(61000);
+    await worker.run('refreshLogPowers(channels)');
+    assert.equal(worker.run('reportedLogPowers()')[channelId], null);
+  }
+});
+
+test("log power queries are bounded, deduplicated, and removed when no longer requested", async () => {
+  let active = 0;
+  let peak = 0;
+  const queried = [];
+  const worker = makeWorker({ fetchImpl: async (endpoint) => {
+    queried.push(String(endpoint));
+    peak = Math.max(peak, ++active);
+    await new Promise(resolve => setImmediate(resolve));
+    active--;
+    return new Response('{"code":200,"content":{"amount":1}}');
+  } });
+  worker.context.channels = [...Array.from({ length: 12 }, (_, i) => i.toString(16).padStart(32, '0')),
+    'bad', 'https://example.com', 'a'.repeat(32), 'a'.repeat(32)];
+  await worker.run('Promise.all([refreshLogPowers(channels), refreshLogPowers(channels)])');
+  assert.ok(peak <= 4);
+  assert.equal(queried.length, 13);
+  await worker.run('refreshLogPowers([])');
+  assert.deepEqual(Object.keys(worker.run('reportedLogPowers()')), []);
+});
+
+test("a slow log power query does not block tab commands and discards results after deselection", async () => {
+  let release;
+  let reports = 0;
+  const worker = makeWorker({ fetchImpl: async (endpoint, options) => {
+    if (String(endpoint).startsWith('https://api.chzzk.naver.com/')) {
+      await new Promise(resolve => { release = resolve; });
+      return new Response('{"code":200,"content":{"amount":12345}}');
+    }
+    const path = new URL(endpoint).pathname;
+    return signedResponse(endpoint, options, path === '/challenge' ? { ok: true, protocol: 2 }
+      : { ok: true, acknowledgedCommandIds: [], openCommands: ++reports === 2 ? [command(88)] : [],
+        logPowerChannelIds: reports === 1 ? ['a'.repeat(32)] : [] });
+  } });
+  try {
+    await worker.run('reportOpenChzzkLives()');
+    assert.equal(typeof release, 'function');
+    await worker.run('reportOpenChzzkLives()');
+    assert.equal(worker.calls.created, 1);
+    assert.equal(worker.run('reporting'), false);
+  } finally {
+    release?.();
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  assert.deepEqual(Object.keys(worker.run('reportedLogPowers()')), []);
+});
+
 test("rejects tampered response and never executes its command", async () => {
   const worker = makeWorker({ fetchImpl: async (endpoint, options) => {
     const signed = signedResponse(endpoint, options, { ok: true, protocol: 2 });

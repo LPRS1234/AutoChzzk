@@ -29,6 +29,29 @@ class ChromeTabStateTests(unittest.TestCase):
         self.tabs.acknowledge_commands("selected-client", [command_id])
         self.assertEqual(self.tabs.pending_commands("selected-client"), [])
 
+    def test_log_power_is_isolated_by_profile_and_expires_with_connection(self):
+        self.tabs.set_log_power_channels({'a' * 32})
+        self.tabs.update('selected-client', set(), {'email:selected@example.com'}, True,
+                         log_powers={'a' * 32: 12345, 'b' * 32: 0})
+        self.tabs.update('other-client', set(), {'email:other@example.invalid'}, True,
+                         log_powers={'a' * 32: 999})
+        self.assertEqual(self.tabs.get_log_power('a' * 32), 12345)
+        self.assertEqual(self.tabs.get_log_power('b' * 32), 0)
+        self.assertEqual(self.tabs.requested_log_power_channels('selected-client'), ['a' * 32])
+        self.assertEqual(self.tabs.requested_log_power_channels('other-client'), [])
+        self.tabs.set_selected_profile({'email:other@example.invalid'})
+        self.assertEqual(self.tabs.get_log_power('a' * 32), 999)
+        with patch('autochzzk_core.extension.time.monotonic', return_value=10**12):
+            self.assertIsNone(self.tabs.get_log_power('a' * 32))
+
+    def test_unavailable_or_legacy_log_power_report_clears_previous_amount(self):
+        for values in ({'a' * 32: None}, None):
+            self.tabs.update('selected-client', set(), {'email:selected@example.com'}, True,
+                             log_powers={'a' * 32: 12345})
+            self.tabs.update('selected-client', set(), {'email:selected@example.com'}, True,
+                             log_powers=values)
+            self.assertIsNone(self.tabs.get_log_power('a' * 32))
+
     def test_close_command_requires_a_connected_selected_profile(self) -> None:
         disconnected = ChromeTabState()
         disconnected.set_selected_profile({"email:selected@example.com"})
